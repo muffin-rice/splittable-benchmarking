@@ -173,6 +173,7 @@ def anchor_forward(self, image_sizes, tensorshapes, feature_maps: List[Tensor]) 
 
 
 class ServerModel(nn.Module):
+    '''server model for faster_rcnn_resnet50-bq1ch_fpn_from_faster_rcnn_resnet50_fpn.yaml'''
     def __init__(self, student_model2):
         super().__init__()
         student_model = deepcopy(student_model2)
