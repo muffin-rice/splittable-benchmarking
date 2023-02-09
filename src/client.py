@@ -187,8 +187,8 @@ class Client:
                  detection_postprocessor : Callable = default_detection_postprocessor, log_stats = PARAMS['LOG_STATS']):
 
         self.socket, self.message, self.socket_buffer_size = None, None, socket_buffer_size
-        self.logger, self.dataset, self.stats_logger = ConsoleLogger(), Dataset(dataset=dataset), \
-                                                       DictionaryStatsLogger(logfile=f"{stats_log_dir}/client-{dataset}-{CURR_DATE}.log", log_stats=log_stats)
+        self.logger, self.dataset = ConsoleLogger(), Dataset(dataset=dataset)
+        self.stats_logger = DictionaryStatsLogger(logfile=f"{stats_log_dir}/client-{run_type}-{dataset}-{CURR_DATE}.log", log_stats=log_stats)
         self.server_connect, self.tracking, self.task, self.run_type = server_connect, tracking, task, run_type
         self.compressor, self.refresh_type = compressor, refresh_type
         self.run_eval, self.model_name, self.tracking_box_limit = run_eval, model_name, tracking_box_limit

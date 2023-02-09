@@ -57,10 +57,11 @@ class Server:
     def __init__(self, server_connect = PARAMS['USE_NETWORK'], compressor = PARAMS['COMPRESSOR'],
                  model_name = PARAMS['MODEL_NAME'], server_device = PARAMS['SERVER_DEVICE'],
                  socket_buffer_size = PARAMS['SOCK_BUFFER_SIZE'], log_stats = PARAMS['LOG_STATS'],
-                 task = PARAMS['TASK']):
+                 task = PARAMS['TASK'], stats_log_dir = PARAMS['STATS_LOG_DIR'], run_type = PARAMS['RUN_TYPE'],
+                 dataset = PARAMS['DATASET']):
         self.socket, self.connection, self.server_connect, self.socket_buffer_size = None, None, server_connect, socket_buffer_size
         self.data, self.logger = None, ConsoleLogger()
-        self.stats_logger = DictionaryStatsLogger(f"{PARAMS['STATS_LOG_DIR']}/server-{PARAMS['DATASET']}-{CURR_DATE}.log", log_stats=log_stats)
+        self.stats_logger = DictionaryStatsLogger(logfile=f"{stats_log_dir}/server-{run_type}-{dataset}-{CURR_DATE}.log", log_stats=log_stats)
         self.task = task
         self.compressor, self.model_name, self.server_device = compressor, model_name, server_device
         self._init_model()
