@@ -303,3 +303,5 @@ class Dataset:
                 # mask_ids = np.zeros_like(mask_frame)
 
                 yield vid_frame, sys.getsizeof(vid_frame), (obj_classes, obj_ids), mask_frame, video_frames[i], i==0
+
+            break

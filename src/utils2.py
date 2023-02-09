@@ -179,7 +179,10 @@ def calculate_bb_iou(boxA, boxB):
     return iou
 
 def calc_mask_iou(maskA, maskB):
-    return -1
+    intersection = np.logical_and(maskA, maskB).sum()
+    union = np.logical_or(maskA, maskB).sum()
+
+    return intersection / union
 
 def map_xyxy_to_xyhw(xyxy_box):
     return np.array((xyxy_box[0], xyxy_box[1], xyxy_box[2] - xyxy_box[0], xyxy_box[3] - xyxy_box[1]))
@@ -205,7 +208,7 @@ def map_coco_outputs(outputs : {str : torch.Tensor}) -> ({int : {int : (int,)}},
             d[class_id][curr_id] = tuple(boxes[i])
         else:
             d[class_id] = {curr_id : tuple(boxes[i])}
-            
+
         curr_id+=1
 
     return d, scores
@@ -356,7 +359,26 @@ def binarize_mask(mask : np.array) -> np.array:
 
     return binary_mask
 
-def eval_segmentation(gt_masks : {int : np.array}, pred_masks : {int : np.array}):
-    print(gt_masks.keys())
-    print(pred_masks.keys())
-    pass
+def combine_masks(object_masks : {int : np.array}) -> np.array:
+    initial_mask = None
+    for object_id in object_masks.keys():
+        if not initial_mask:
+            initial_mask = object_masks[object_id].copy()
+
+        else:
+            initial_mask = np.logical_or(initial_mask, object_masks[object_id])
+
+    return initial_mask
+
+def eval_segmentation(gt_masks : {int : {int : np.array}}, pred_masks : {int : np.array}):
+    '''evals in the format of class_id : score'''
+    scores = {}
+    missing_preds = set()
+    for class_id, object_masks in gt_masks.items():
+        if class_id in pred_masks:
+            object_mask = combine_masks(object_masks)
+            scores[class_id] = calc_mask_iou(object_mask, pred_masks[class_id])
+        else:
+            missing_preds.add(class_id)
+
+    return scores, missing_preds

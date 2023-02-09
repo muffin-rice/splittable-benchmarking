@@ -591,9 +591,9 @@ class Client:
 
     def eval_segmentation(self, gt_mask, pred_mask, *kargs):
         # TODO: function
-        eval_segmentation(gt_mask, pred_mask)
-        self.logger.log_info('Segmentation evaluation not implemented yet.')
-        pass
+        self.logger.log_info('Evaluating segmentation.')
+        pred_scores, missing_preds = eval_segmentation(gt_mask, pred_mask)
+        self.stats_logger.push_log({'missing_preds' : missing_preds, **pred_scores}, append=False)
 
     def _reset_state_on_launch(self, data):
         self.parallel_state = 1

@@ -76,7 +76,10 @@ def segment_image_knn(full_img: np.array, object_boxes: {int: [int]}, box_radius
             continue
 
         subimg_lab = img_lab[bbox[0]: bbox[0] + bbox[2], bbox[1]: bbox[1] + bbox[3]]
-        obj_masks[object_id] = segment_subimg_knn(subimg_lab, ref_bg, image_normalization, box_radius)
+        mask = segment_subimg_knn(subimg_lab, ref_bg, image_normalization, box_radius)
+
+        obj_masks[object_id] = np.zeros((full_img.shape[0], full_img.shape[1]))
+        obj_masks[object_id][bbox[0]: bbox[0] + bbox[2], bbox[1]: bbox[1] + bbox[3]] = mask
 
     return obj_masks
 
@@ -86,7 +89,8 @@ def segment_image_mrf(full_img : np.array, object_boxes : {int : [int]}):
         subimg = full_img[bbox[0] : bbox[0] + bbox[2], bbox[1] : bbox[1] + bbox[3]].copy()
         mask = segment_subimg_mrf(subimg)
 
-        obj_masks[object_id] = mask
+        obj_masks[object_id] = np.zeros((full_img.shape[0], full_img.shape[1]))
+        obj_masks[object_id][bbox[0] : bbox[0] + bbox[2], bbox[1] : bbox[1] + bbox[3]] = mask
 
     return obj_masks
 
