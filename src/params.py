@@ -34,40 +34,49 @@ PARAMS['VIDEO_SHAPE'] = (1280,720)
 PARAMS['DAVIS_SCENES'] = [1,2,3,4,5,6,7,8,9,10]
 PARAMS['KITTI_NAMES'] = ['timestep', 'object_i', 'class_name', '_1', '_2', '_3', 'x0', 'y0', 'x1', 'y1', '_4', '_5', '_6', '_7', '_8', '_9', '_10']
 
+# params for model yamls and paths
+PARAMS['FASTER_RCNN_YAML'] = 'configs/coco2017/supervised_compression/entropic_student/faster_rcnn_splittable_resnet50-fp-beta0.08_fpn_from_faster_rcnn_resnet50_fpn.yaml'
+PARAMS['DEEPLABV3_YAML'] = 'configs/pascal_voc2012/supervised_compression/entropic_student/deeplabv3_splittable_resnet50-fp-beta0.16_from_deeplabv3_resnet50.yaml'
+# note: unusable due to lack of JIT
+PARAMS['CLIENT_MODEL_PATH'] = 'Models/Split/model_2_client.pt'
+PARAMS['SERVER_MODEL_PATH'] = 'Models/Split/model_2_client.pt'
+
 # params for run type
-PARAMS['RUN_TYPE'] = 'BB'
+PARAMS['RUN_TYPE'] = 'BB' # 'bounding box' vs 'segmentation mask'
 PARAMS['EVAL'] = True
 PARAMS['BOX_LIMIT'] = 10 # max number of boxes to track, only applicable if EVAL is false
 
 # params for the tracking
 PARAMS['TRACKING'] = True # execute + evaluate a tracking algorithm; if false, evaluates the detector
 PARAMS['TRACKER'] = 'MEDIANFLOW' # tracker algorithm
+PARAMS['BBOX_SEG'] = None
 
-# params for the object detection
-PARAMS['DETECTION'] = True # if false, uses ground truth labels for the detection (to eval tracking) – false makes it offline
-PARAMS['DET_COMPRESSOR'] = 'model' # 'model' vs. 'classical': model is bottleneck, classical is classical compression
+# params for the object detection / segmentation
+PARAMS['TASK'] = 'det' # det, seg, gt; gt means no predictions will happen
+# TODO: combine run_type and task
+
+# params for models
+PARAMS['COMPRESSOR'] = 'model' # 'model' vs 'classical'
 PARAMS['COMPRESSOR_DEVICE'] = 'cpu'
-PARAMS['DETECTION_DEVICE'] = 'cpu'
-PARAMS['DETECTOR_MODEL'] = 'faster_rcnn' # specific detector model
-# params for parallelized detection
-PARAMS['DET_PARALLEL'] = True
+PARAMS['SERVER_DEVICE'] = 'cpu'
+PARAMS['SMARTDET'] = True # parallelized detection/segmentation
+PARAMS['MODEL_NAME'] = 'deeplabv3' # specific detection / segmentation model
+PARAMS['STUDENT_YAML'] = PARAMS[f'{PARAMS["MODEL_NAME"].upper()}_YAML'] # yaml file for loading the student model if split
 
 # params for detection 'refreshes'
 PARAMS['BOX_REFRESH'] = 'fixed' # method to refresh bbox
 PARAMS['REFRESH_ITERS'] = 10 # for fixed method, how many fixed iterations to refresh bb; setting iters to 1 makes detection run 100%
 
-# params for model yamls
-PARAMS['FASTER_RCNN_YAML'] = '../../configs/coco2017/supervised_compression/entropic_student/faster_rcnn_splittable_resnet50-fp-beta0.08_fpn_from_faster_rcnn_resnet50_fpn.yaml'
-
 try:
-  print('USING PARAM OVERRIDES')
   from param_overrides import PARAM_OVERRIDES
+  print('USING PARAM OVERRIDES')
   PARAMS.update(PARAM_OVERRIDES)
 except:
   print('NO PARAM OVERRIDES DETECTED')
   pass
 
-COCO_CLASS_DICT = {0: u'__background__',
+COCO_CLASS_DICT = {
+ 0: u'__background__',
  1: u'person',
  2: u'bicycle',
  3: u'car',
@@ -148,3 +157,61 @@ COCO_CLASS_DICT = {0: u'__background__',
  78: u'teddy bear',
  79: u'hair drier',
  80: u'toothbrush'}
+
+PASCAL_CLASS_DICT = {
+ 1: u'aeroplane',
+ 2: u'bicycle',
+ 3: u'bird',
+ 4: u'boat',
+ 5: u'bottle',
+ 6: u'bus',
+ 7: u'car ',
+ 8: u'cat',
+ 9: u'chair',
+ 10: u'cow',
+ 11: u'diningtable',
+ 12: u'dog',
+ 13: u'horse',
+ 14: u'motorbike',
+ 15: u'person',
+ 16: u'potted plant',
+ 17: u'sheep',
+ 18: u'sofa',
+ 19: u'train',
+ 20: u'tv/monitor',
+}
+
+PASCAL_COCO_MAP = {
+ 1: 5,
+ 2: 2,
+ 3: 15,
+ 4: 9,
+ 5: 40,
+ 6: 6,
+ 7: 3,
+ 8: 16,
+ 9: 57,
+ 10: 20,
+ 11: 61,
+ 12: 17,
+ 13: 18,
+ 14: 4,
+ 15: 1,
+ 16: 59,
+ 17: 19,
+ 18: 100, # sofa is unmatched
+ 19: 7,
+ 20: 63,
+}
+
+# TODO: implement the rest of the classes
+DAVIS_PASCAL_MAP = {
+ 'bear': (0,12,), # bear is most similar to dog class
+ 'bike-packing': (0,2,15),
+ 'blackswan': (0,3,),
+ 'bmx-bumps': (0,15,14),
+ 'bmx-trees': (0,15,2),
+ 'boat': (0,4,),
+ 'boxing-fisheye': (0,15,),
+ 'breakdance': (0,15,),
+}

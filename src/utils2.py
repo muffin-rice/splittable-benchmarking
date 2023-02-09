@@ -5,6 +5,7 @@ import numpy as np
 from params import PARAMS, DESIRED_CLASSES
 import torch
 from copy import deepcopy
+from skimage import color
 
 def default_detection_postprocessor(d):
     return
@@ -15,6 +16,25 @@ def load_model(model_config, device):
         return load_detection_model(model_config, device)
     from sc2bench.models.detection.wrapper import get_wrapped_detection_model
     return get_wrapped_detection_model(model_config, device)
+
+def get_student_model(yaml_file = PARAMS['STUDENT_YAML']):
+    from torchdistill.common.yaml_util import load_yaml_file
+    if yaml_file is None:
+        return None
+
+    config = load_yaml_file(os.path.expanduser(yaml_file))
+    models_config = config['models']
+    if PARAMS['MODEL_NAME'] == 'deeplabv3':
+        models_config['student_model'][
+            'ckpt'] = 'Models/yoshi/entropic/pascal_voc2012-deeplabv3_splittable_resnet50-fp-beta0.16_from_deeplabv3_resnet50.pt'
+        models_config['student_model']['params']['backbone_config'][
+            'ckpt'] = 'Models/yoshi/entropic/ilsvrc2012-splittable_resnet50-fp-beta0.16_from_resnet50.pt'
+
+    student_model_config = models_config['student_model'] if 'student_model' in models_config else models_config[
+        'model']
+    student_model = load_model(student_model_config, PARAMS['SERVER_DEVICE']).eval()
+
+    return student_model
 
 def get_tensor_size(tensor) -> int:
     # "primitive" types
@@ -158,6 +178,9 @@ def calculate_bb_iou(boxA, boxB):
     # return the intersection over union value
     return iou
 
+def calc_mask_iou(maskA, maskB):
+    return -1
+
 def map_xyxy_to_xyhw(xyxy_box):
     return np.array((xyxy_box[0], xyxy_box[1], xyxy_box[2] - xyxy_box[0], xyxy_box[3] - xyxy_box[1]))
 
@@ -290,3 +313,50 @@ def eval_detections(gt_detections : {int : (int,)}, pred_detections : {int : (in
             missing_detections.add(gt_object_id)
 
     return scores, missing_detections
+
+
+def rgb2lab(img):
+    assert img.shape[2] == 3
+
+    return color.rgb2lab(img)
+
+
+def lab2rgb(img):
+    return color.lab2rgb(img)
+
+
+def separate_segmentation_mask(mask : np.array, OBJECT_LIMIT = 20) -> {int : np.array}:
+    '''given a segmentation of pixels where each pixel value corresponds to a specific class,
+    return the separated segmentation mask by object id '''
+    object_ids = np.unique(mask)
+    assert len(object_ids) < OBJECT_LIMIT, 'too many objects in segmentation scene'
+
+    return {int(object_id) : mask == object_id for object_id in object_ids}
+
+
+def get_bbox_from_mask(mask : np.array) -> [int]:
+    '''given a 2D 0/1 binary input mask, output the xyhw bounding box'''
+    binary_mask = binarize_mask(mask)
+
+    assert len(binary_mask.shape) == 2, 'dimenisons of binary mask are incorrect'
+    assert tuple(np.unique(binary_mask)) == (0,1)
+
+    indices = np.where(binary_mask == 1)
+
+    x_min, x_max = indices[0].min(), indices[0].max()
+    y_min, y_max = indices[1].min(), indices[1].max()
+
+    return [x_min, x_max - x_min, y_min, y_max - y_min]
+
+def binarize_mask(mask : np.array) -> np.array:
+    binary_mask = np.zeros_like(mask)
+    mask -= mask.min()
+    mask /= mask.max()
+    binary_mask[mask>0.5] = 1
+
+    return binary_mask
+
+def eval_segmentation(gt_masks : {int : np.array}, pred_masks : {int : np.array}):
+    print(gt_masks.keys())
+    print(pred_masks.keys())
+    pass

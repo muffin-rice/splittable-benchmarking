@@ -30,7 +30,7 @@ class ClientModel(nn.Module):
     def forward(self, x):
         input_shape = x.shape[-2:]
         features = self.encoder_forward(x)
-        return features, input_shape
+        return (features,), (input_shape,)
 
 # ==================================================== SERVER ====================================================
 

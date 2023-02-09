@@ -11,13 +11,10 @@ from params import PARAMS, CURR_DATE, DESIRED_CLASSES
 from Logger import ConsoleLogger, DictionaryStatsLogger
 from utils2 import *
 from data import Dataset
-from split_models import model_2
-from tracker import Tracker
+from tracker import Tracker, BoxTracker, MaskTracker, BoxMaskTracker
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
-
-from torchdistill.common import yaml_util
 
 def create_input(data):
     return data
@@ -43,6 +40,7 @@ def get_gt_detections_as_pred(class_info : ((int,), (int,)), boxes : [[int,],]) 
     '''reformats the annotations into tracker-prediction format
     class_info is (class_ids, object_ids)
     returns as {object_id : box}'''
+    # TODO: move reformatting into dataset
     assert len(class_info[0]) == len(boxes), f'class_info: {class_info} boxes: {boxes}'
     gt_boxes = {}
     for i in range(len(class_info[0])):
@@ -53,96 +51,182 @@ def get_gt_detections_as_pred(class_info : ((int,), (int,)), boxes : [[int,],]) 
 
     return gt_boxes
 
+def get_gt_masks(class_info : ((int,), (int,)), gt_mask) -> {int : {int : np.array}}:
+    '''returns mask as class : object : map'''
+    mask_maps = separate_segmentation_mask(gt_mask)
+
+    assert len(class_info[1]) == len(mask_maps.keys()), f'keys are {class_info[1]} vs. {mask_maps.keys()}'
+
+    gt_masks = {}
+
+    for i in range(len(class_info[0])):
+        curr_class = class_info[0][i]
+        curr_obj = class_info[1][i]
+
+        if curr_class not in gt_masks:
+            gt_masks[curr_class] = {curr_obj : mask_maps[curr_obj]}
+        else:
+            gt_masks[curr_class][curr_obj] = mask_maps[curr_obj]
+
+    return gt_masks
+
+def get_gt_masks_as_pred(class_info : ((int,), (int,)), gt_mask : np.array) -> np.array:
+    '''returns the given gt_mask as a 1 x 21 x W x H array'''
+    x = np.zeros((1, 21, gt_mask.shape[0], gt_mask.shape[1]))
+
+    for class_id, obj_id in zip(class_info[0], class_info[1]):
+        x[0, class_id, :, :][gt_mask == obj_id] = 1
+
+    return x
+
 class Client:
     def _init_tracker(self):
+        '''initializes mask or bb tracker'''
         if self.tracking:
-            self.tracker = Tracker()
+            if self.run_type == 'BB':
+                self.tracker = BoxTracker(self.logger)
+            elif self.run_type == 'SM':
+                # self.tracker = MaskTracker(self.logger)
+                self.tracker = BoxMaskTracker(self.logger)
+            else:
+                raise NotImplementedError
 
-    def _init_detector(self):
+    def _init_models(self, client_path = PARAMS['CLIENT_MODEL_PATH'], server_path = PARAMS['SERVER_MODEL_PATH']):
+        '''initializes the model according to self.model_name'''
         self._refresh_iters = 1
-        if not self.detection:
+        if self.is_gt():
             return
 
-        if self.detection_compression == 'model':
-            # use student model
-            self.logger.log_debug(f'Setting up compression model {self.detector_model}.')
+        self.logger.log_info('Creating models')
 
-            if self.detector_model == 'faster_rcnn':
-                student_model = get_student_model(PARAMS['FASTER_RCNN_YAML'])
+        if self.compressor == 'model':
+            self.logger.log_debug(f'Setting up compression model {self.model_name}')
+            student_model = get_student_model()
+            if self.model_name == 'faster_rcnn':
+                from split_models import model_2
                 self.client_model = model_2.ClientModel(student_model)
                 if self.server_connect:
                     self.server_model = nn.Identity()
                 else:
                     self.server_model = model_2.ServerModel(student_model)
 
-                self.client_model.to(self.compressor_device)
-                self.server_model.to(self.detector_device)
+            elif self.model_name == 'deeplabv3':
+                from split_models import model_3
+                self.client_model = model_3.ClientModel(student_model)
+                if self.server_connect:
+                    self.server_model = nn.Identity()
+                else:
+                    self.server_model = model_3.ServerModel(student_model)
+
             else:
-                raise NotImplementedError
+                raise NotImplementedError('No other model is implemented for splitting.')
+
+            if client_path:
+                self.client_model.load_state_dict(torch.load(client_path))
+
+            if server_path and not self.server_connect:
+                self.server_model.load_state_dict(torch.load(server_path))
+
+            self.client_model.to(self.compressor_device)
+            self.server_model.to(self.server_device)
 
         else: # classical compression
             if self.server_connect:
                 self.logger.log_debug('Classical; connecting to server for detection.')
                 pass
+
             else:
-                self.logger.log_debug(f'Classical compression; setting up model {self.detector_model} for offline detection.')
+                self.logger.log_debug(
+                    f'Classical compression; setting up model {self.model_name} for offline detection.')
                 # offline; get models
-                if self.detector_model == 'faster_rcnn':
+                if self.model_name == 'faster_rcnn':
                     from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2
                     self.server_model = fasterrcnn_resnet50_fpn_v2(pretrained=True).eval()
-                elif self.detector_model == 'mask_rcnn':
+                elif self.model_name == 'mask_rcnn':
                     from torchvision.models.detection import maskrcnn_resnet50_fpn
                     self.server_model = maskrcnn_resnet50_fpn(pretrained=True).eval()
-                elif self.detector_model == 'retinanet':
+                elif self.model_name == 'retinanet':
                     from torchvision.models.detection import retinanet_resnet50_fpn
                     self.server_model = retinanet_resnet50_fpn(pretrained=True).eval()
+                elif self.model_name == 'deeplabv3':
+                    from torchvision.models.segmentation import deeplabv3_resnet50
+                    self.server_model = deeplabv3_resnet50(weights='DEFAULT').eval()
                 else:
                     raise NotImplementedError
 
-                self.server_model.to(self.detector_device)
+                self.server_model.to(self.server_device)
 
     def _init_multiprocessor(self):
+        '''initializes multiprocessor objects if parallel_run
+        calls init_mp in tracker'''
         if self.parallel_run:
-            assert self.detection, 'Cannot parallelize detection when detection is false.'
+
             self.parallel_executor = ThreadPoolExecutor(max_workers=1)
-            # initialize shared detection objects needed for logging/eval
-            self.parallel_detector = None
-            # self.server_model.to(self.detector_device)
-            self.parallel_state = 0 # goes between ['rest', 'running', 'catchup']
-            self.old_timestep = -1 # timestep tracker for other processes
-            self.old_start_counter = -1 # counter to track the current video
-            self.old_frame = None # frame from original
+            self.parallel_thread = None
+            self.parallel_state = 0  # goes between ['rest', 'running', 'catchup']
+            self.old_timestep = -1  # timestep tracker for other processes
+            self.old_start_counter = -1  # counter to track the current video
+            self.tracker.init_multiprocessing()
             self.old_class_map_detection = None
-            self.catchup_frames = [] # list of images for catch-up to use
+
+            if self.is_detection():
+                # initialize shared detection objects needed for logging/eval
+                self.parallel_thread = None
+            elif self.is_segmentation():
+                self.parallel_segmentor = None
+            else:
+                raise NotImplementedError('No other parallel runs.')
 
     def __init__(self, server_connect = PARAMS['USE_NETWORK'], run_type = PARAMS['RUN_TYPE'],
                  stats_log_dir = PARAMS['STATS_LOG_DIR'], dataset = PARAMS['DATASET'], tracking = PARAMS['TRACKING'],
-                 detection = PARAMS['DETECTION'], detection_compression = PARAMS['DET_COMPRESSOR'],
+                 task = PARAMS['TASK'], compressor = PARAMS['COMPRESSOR'],
                  refresh_type = PARAMS['BOX_REFRESH'], run_eval = PARAMS['EVAL'],
-                 detector_model = PARAMS['DETECTOR_MODEL'], detector_device = PARAMS['DETECTION_DEVICE'],
+                 model_name = PARAMS['MODEL_NAME'], server_device = PARAMS['SERVER_DEVICE'],
                  compressor_device = PARAMS['COMPRESSOR_DEVICE'], socket_buffer_size = PARAMS['SOCK_BUFFER_SIZE'],
-                 tracking_box_limit = PARAMS['BOX_LIMIT'], parallel_run = PARAMS['DET_PARALLEL'],
+                 tracking_box_limit = PARAMS['BOX_LIMIT'], parallel_run = PARAMS['SMARTDET'],
                  detection_postprocessor : Callable = default_detection_postprocessor, log_stats = PARAMS['LOG_STATS']):
 
         self.socket, self.message, self.socket_buffer_size = None, None, socket_buffer_size
         self.logger, self.dataset, self.stats_logger = ConsoleLogger(), Dataset(dataset=dataset), \
                                                        DictionaryStatsLogger(logfile=f"{stats_log_dir}/client-{dataset}-{CURR_DATE}.log", log_stats=log_stats)
-        self.server_connect, self.tracking, self.detection, self.run_type = server_connect, tracking, detection, run_type
-        self.detection_compression, self.refresh_type = detection_compression, refresh_type
-        self.run_eval, self.detector_model, self.tracking_box_limit = run_eval, detector_model, tracking_box_limit
+        self.server_connect, self.tracking, self.task, self.run_type = server_connect, tracking, task, run_type
+        self.compressor, self.refresh_type = compressor, refresh_type
+        self.run_eval, self.model_name, self.tracking_box_limit = run_eval, model_name, tracking_box_limit
 
-        self.detector_device, self.compressor_device = detector_device, compressor_device
+        self.server_device, self.compressor_device = server_device, compressor_device
         self.parallel_run = parallel_run
 
         self.class_map_detection = {}
 
         self._init_tracker()
-        self._init_detector()
+        self._init_models()
         self._init_multiprocessor()
 
         self.k = 1 # internal index counter
         self.start_counter = 0 # every time there is a new start to the vid, increase the counter
         self.detection_postprocess = detection_postprocessor
+
+        if self.run_type == 'BB':
+            self.get_gt = get_gt_detections
+            self.get_gt_as_pred = get_gt_detections_as_pred
+            self.get_pred = self.get_detections
+
+        elif self.run_type == 'SM':
+            self.get_gt = get_gt_masks
+            self.get_gt_as_pred = get_gt_masks_as_pred
+            self.get_pred = self.get_segmentation_mask
+
+        else:
+            raise NotImplementedError
+
+    def is_detection(self):
+        return self.task == 'det'
+
+    def is_segmentation(self):
+        return self.task == 'seg'
+
+    def is_gt(self):
+        return self.task == 'gt'
 
     def _connect(self, server_ip, server_port):
         assert self.server_connect
@@ -162,7 +246,7 @@ class Client:
         else:
             self.logger.log_info('Message received not server ack')
 
-    def start(self, server_ip, server_port):
+    def start_client(self, server_ip, server_port):
         if self.server_connect:
             self._connect(server_ip, server_port)
             self._client_handshake()
@@ -171,7 +255,7 @@ class Client:
         else:
             self.logger.log_info('Starting in offline mode.')
 
-    def _send_encoder_data(self, data):
+    def _send_encoded_data(self, data):
         '''if connected to the server, formats and sends the data
         else, simply store the data in self.message'''
         if self.server_connect:
@@ -189,7 +273,7 @@ class Client:
             self.message = data
 
     def _get_server_data(self):
-        '''returns the server data in any format'''
+        '''returns the server data in bytes'''
         assert self.server_connect
         self.logger.log_debug('Waiting for server data.')
 
@@ -210,11 +294,10 @@ class Client:
 
             return pickle.loads(data)
 
-    def _get_model_bb(self):
-        '''uses the model to get the bounding box
-        will never be called if DETECTOR is False'''
+    def _get_model_data(self):
+        '''uses the model (whether waiting for server or running offline) to get desired information'''
 
-        assert self.detection
+        assert self.is_detection() or self.is_segmentation()
 
         if self.server_connect: # connects to server and gets the data from there
             return self._get_server_data()
@@ -223,69 +306,62 @@ class Client:
             self.logger.log_debug('Using offline model for detection.')
 
             client_data = self.message['data']
-            if self.detection_compression == 'model':
-                client_data_device = move_data_list_to_device(client_data, self.detector_device)
-                if self.detector_model == 'faster_rcnn':
+            if self.compressor == 'model':
+                client_data_device = move_data_list_to_device(client_data, self.server_device)
+                if self.model_name == 'faster_rcnn':
                     model_outputs = self.server_model(*client_data_device)[0]
+                elif self.model_name == 'deeplabv3':
+                    model_outputs = self.server_model(*client_data_device)
                 else:
                     raise NotImplementedError('No specified detector model exists.')
-            elif self.detection_compression == 'classical':
+            elif self.compressor == 'classical':
                 decoded_frame = decode_frame(client_data)
-                model_outputs = self.server_model([torch.from_numpy(decoded_frame).float().to(self.detector_device)])[0] # first frame
+                model_outputs = self.server_model([torch.from_numpy(decoded_frame).float().to(self.server_device)])[0] # first frame
             else:
                 raise NotImplementedError('No other compression method exists.')
 
             self.logger.log_debug("Generated new BB with model (offline).")
             return move_data_dict_to_device(model_outputs, 'cpu')
 
-    def _handle_server_data(self, server_data, server_model = PARAMS['DETECTOR_MODEL']):
+    def _handle_server_data(self, server_data):
         '''Handles the server data, ie. formatting the model outputs into eval-friendly
         and tracker-friendly outputs'''
-        if self.detection:
+        if self.is_detection():
             # server_data is in the format of {'boxes' : [], 'labels' : [], 'scores' : []}
             detections, scores = map_coco_outputs(server_data)
             return detections
+        elif self.is_segmentation():
+            # server data is in the shape of 1 x 21 x W x H
+            return server_data['out'].detach().numpy()
         else:
             raise NotImplementedError('No other server task other than detection.')
 
-    def _get_new_bounding_box(self, d : (), before = None) -> {int : {int : (int,)}}:
-        '''gets a new "accurate" bounding box (from a separate detection pipeline)
-        returns in the format of {object_id : (xyxy)}'''
-
-        data, size_orig, class_info, gt, fname, _ = d
-        gt_detections = get_gt_detections(class_info, gt)
-
-        # if gt is used, get bounding box will simply return the ground truth
-        if not self.detection:
-            self.logger.log_debug('Using ground truth boxes.')
-            # return ground truth boxes
-            _, size_orig, class_info, gt, _, _ = d
-
-            self.stats_logger.push_log({'gt' : True, 'original_size' : size_orig})
-            return gt_detections
-
-        # otherwise, use an actual detector
+    def _compress_and_send_data(self, d):
+        '''compresses information and sends it'''
         # offline case in model detection is handled in the individual helper functions
         self.logger.log_debug('Creating message for boxes.')
         # uses model for detection; requires some compression (make metrics)
-        if self.detection_compression == 'model':  # use a model (bottleneck) to compress it
+        data, size_orig, class_info, gt, fname, _ = d
+
+        if self.compressor == 'model':  # use a model (bottleneck) to compress it
             self.logger.log_debug('Performing compression using mdoel.')
-            data, size_orig, class_info, gt, fname, _ = d
-            data_reshape = (data/256).transpose((2,0,1))[np.newaxis, ...]
+            data_reshape = (data / 256).transpose((2, 0, 1))[np.newaxis, ...]
 
             # collect model runtime
             now = time.time()
-            tensors_to_measure, other_info = self.client_model(torch.from_numpy(data_reshape).float().to(self.compressor_device))
-            tensors_to_measure, other_info = move_data_list_to_device(tensors_to_measure, 'cpu'), move_data_list_to_device(other_info, 'cpu')
+            tensors_to_measure, other_info = self.client_model(
+                torch.from_numpy(data_reshape).float().to(self.compressor_device))
+            tensors_to_measure, other_info = move_data_list_to_device(tensors_to_measure, 'cpu'), \
+                                             move_data_list_to_device(other_info, 'cpu')
             compression_time = time.time() - now
 
             size_compressed = get_tensor_size(tensors_to_measure)
 
             message = {'timestamp': time.time(), 'data': (*tensors_to_measure, *other_info)}
 
-            self.stats_logger.push_log({'compressor' : 'model'})
+            self.stats_logger.push_log({'compressor': 'model'})
 
-        elif self.detection_compression == 'classical':  # classical compression – compress data (frame) into jpg
+        elif self.compressor == 'classical':  # classical compression – compress data (frame) into jpg
             # TODO: make options – option to compress into jpg or compress video inside dataloader
             self.logger.log_debug('Performing classical compression on image.')
 
@@ -306,17 +382,36 @@ class Client:
                                     'original_size': size_orig}, append=False)
         self.logger.log_info(f'Generated message with bytesize {size_compressed} and original {size_orig}')
 
-        self._send_encoder_data(message)
+        self._send_encoded_data(message)
+
+    def _get_new_pred(self, d : (), before = None) -> {int : {int : (int,)}}:
+        '''gets a new "accurate" bounding box/mask (from a separate detection pipeline)
+        returns in the format of {object_id : (xyxy)}'''
+
+        data, size_orig, class_info, gt, fname, _ = d
+        gt_for_eval = self.get_gt_as_pred(class_info, gt)
+
+        # if gt is used, function will simply return the ground truth;
+        if self.is_gt():
+            self.logger.log_debug('Using ground truth boxes.')
+            # return ground truth boxes
+            _, size_orig, class_info, gt, _, _ = d
+
+            self.stats_logger.push_log({'gt' : True, 'original_size' : size_orig})
+            return gt_for_eval
+
+        # otherwise, use an actual detector
+        self._compress_and_send_data(d)
 
         # response_time in the offline case will be the time it takes for the server model to run
         # in the online case it will be 2x latency + response_time
         now = time.time()
-        server_data = self._get_model_bb() # batch size 1
+        server_data = self._get_model_data() # batch size 1
         if server_data is None:
-            server_data = gt_detections
+            server_data = gt_for_eval
 
         self.stats_logger.push_log({'response_time': time.time() - now}, append=False)
-        self.logger.log_info(f'Received detection with response time {time.time() - now}')
+        self.logger.log_info(f'Received information with response time {time.time() - now}')
 
         return self._handle_server_data(server_data)
 
@@ -333,19 +428,19 @@ class Client:
         else:
             raise NotImplementedError('Invalid Refresh Type')
 
-    def _reinit_tracker(self, frame : np.ndarray, detections : {int : (int,)}):
+    def _reinit_tracker(self, frame : np.ndarray, info : {int : (int,)}):
         '''creates a new tracker with the detections and frames
         detections is in the format of {object_id : [box]}'''
         if self.tracking:
-            self.tracker.handle_new_detection(frame, detections)
+            self.tracker.restart_tracker(frame, info)
 
-    def get_tracker_bounding_box(self, frame) -> {int : (int,)}:
+    def get_tracker_pred_from_frame(self, frame) -> {int : (int,)}:
         '''updtes the tracker with the new frame and return the detections at that frame'''
         if self.tracking:
             now = time.time()
-            detections = self.tracker.update(frame)
+            info = self.tracker.process_frame(frame)
             self.stats_logger.push_log({'tracker': True, 'tracker_time': time.time() - now})
-            return detections
+            return info
 
         return None
 
@@ -367,11 +462,12 @@ class Client:
         return detections, class_map_detection
 
     def get_detections(self, data, class_info, gt, d, now, start=False) -> ({int : [int]}, {int : int}):
-        '''large function that gets the ground truth detections in correct format'''
+        '''large function that gets the detections in the format of
+        object_id : box, detection mapping to ground truth object IDs'''
         self.logger.log_debug('Re-generating bounding boxes.')
 
-        gt_detections_with_classes = get_gt_detections(class_info, gt)
-        detections_with_classes = self._get_new_bounding_box(d, now)
+        gt_detections_with_classes = self.get_gt(class_info, gt)
+        detections_with_classes = self._get_new_pred(d, now)
 
         if self.run_eval:
             self.logger.log_debug('Reformatting raw detections.')
@@ -379,86 +475,110 @@ class Client:
                                                                                  detections_with_classes)
 
         else:
-            self.logger.log_debug('Reformating and limiting raw detections (eval false).')
+            self.logger.log_debug('Reformatting and limiting raw detections (eval false).')
             return_clause = lambda _d: len(_d) > self.tracking_box_limit
             detections, class_map_detection = remove_classes_from_detections(detections_with_classes,
                                                                              return_clause=return_clause)
 
         return detections, class_map_detection
 
-    def _execute_catchup(self, old_timestep : int, old_detections, starting_frame) -> (Tracker, {}):
-        '''iterates until self.catchup_list is empty, returns new tracker with updated start and logs'''
+    def _reformat_masks_for_eval(self, gt_masks : {int : {int : np.array}}, masks : np.array) -> {int : np.array}:
+        # TODO: use object_id instead of class_id
+        '''filters the mask (1 x 21 x H x W) np array into a format of
+        class_id : np.array mask'''
+        self.logger.log_debug('Reformatting masks from straight array to dict')
+        mask_classes = {}
+        for class_id in gt_masks.keys():
+            mask_classes[class_id] = masks[0, class_id, :, :]
+
+        return mask_classes
+
+    def get_segmentation_mask(self, data, class_info, gt, d, now, start=False) -> ({int: np.array}, {int : int}):
+        '''gets the segmentation mask as a class_id : np array'''''
+        self.logger.log_debug('Generating mask')
+
+        gt_masks = self.get_gt(class_info, gt)
+        masks = self._get_new_pred(d, now)
+
+        # if self.run_eval:
+        self.logger.log_debug('Reformatting raw masks.')
+        reformatted_masks = self._reformat_masks_for_eval(gt_masks, masks)
+        #
+        # else:
+        #     self.logger.log_debug('Limiting raw detections')
+
+        class_map_detection = {}
+
+        for k1, v1 in gt_masks.items():
+            for k2 in v1.keys():
+                class_map_detection[k2] = k1
+
+        return reformatted_masks, class_map_detection
+
+    def _execute_catchup(self, old_timestep : int, old_detections) -> (BoxTracker, {}):
+        '''executes catchup on the tracker'''
         assert self.parallel_state == 2, 'States not synced; parallel state should be 2 (in catchup).'
+        self.logger.log_debug('Executing catchup')
         if not self.tracking:
             self.logger.log_debug('No tracking; returning')
             return
 
-        stats_logs = {}
+        stats_logs = self.tracker.execute_catchup(old_timestep, old_detections)
 
-        starting_length = len(self.catchup_frames)
-        self.logger.log_debug(f'Starting from {old_timestep}, processing {starting_length}')
-        num_processed = 0
-        # from _init_trackers()
-        catchup_tracker = Tracker()
-        catchup_tracker.handle_new_detection(starting_frame, old_detections)
-        curr_detections = old_detections # do nothing with old detections
-        starting_time = time.time()
-        while num_processed < len(self.catchup_frames):
-            if num_processed > 10:
-                raise AssertionError('Catchup taking too many iterations')
+        return stats_logs
 
-            curr_detections = catchup_tracker.update(self.catchup_frames[num_processed])
-            self.logger.log_debug(f'Processed frame {num_processed}')
-            num_processed += 1
+    def handle_thread_result(self):
+        '''information received from server; perform action with outdated information'''
+        if self.is_detection(): # launch catchup algorithm
+            old_detections, self.old_class_map_detection = self.parallel_thread.result()
+            self.stats_logger.push_log({'num_detections': len(old_detections), 'tracker': False})
+            self.logger.log_info('Parallel detections received; launching catchup')
+            self.parallel_thread = self.parallel_executor.submit(self._execute_catchup, self.old_timestep,
+                                                                 old_detections)
+        elif self.is_segmentation():
+            pass
 
-        stats_logs['process_time'] = time.time() - starting_time
-        stats_logs['added_frames'] = len(self.catchup_frames) - starting_length
-
-        return catchup_tracker, stats_logs
+    def handle_catchup_result(self):
+        '''catchup completed; resync variables'''
+        self.logger.log_info('Re-syncing self.tracker, handling catchup result.')
+        self.class_map_detection = self.old_class_map_detection
+        logs = self.parallel_thread.result()
+        self.tracker.reset_mp()
+        self.old_class_map_detection = None
+        self.stats_logger.push_log(logs)
+        self.stats_logger.push_log({'reset_tracker': True, 'reset_i': self.old_timestep, })
 
     def update_parallel_states(self, data):
-        '''re-syncs variables and trackers if they are completed; this is in-thread'''
+        '''re-syncs variables and trackers if they are completed; performed in-thread'''
         if self.parallel_run:
-            if self.parallel_detector is not None: # if it's none, it's been completed
-                if self.parallel_detector.done():
-                    if self.parallel_state == 1: # got bounding boxes for timestep i, time to execute catch-up
-                        self.logger.log_info('Exiting state 1; going to state 2.')
-                        if self.parallel_detector.exception():
-                            err = self.parallel_detector.exception()
-                            raise NotImplementedError(f'Detection thread errored for some reason: {str(err)}')
+            if not self.is_gt():
+                if self.parallel_thread is not None: # if it's none, it's been completed
+                    if self.parallel_thread.done():
+                        if self.parallel_state == 1: # got bounding boxes for timestep i, time to execute catch-up
+                            self.logger.log_info('Exiting state 1; going to state 2.')
+                            if self.parallel_thread.exception():
+                                err = self.parallel_thread.exception()
+                                raise NotImplementedError(f'Detection thread errored for some reason: {str(err)}')
 
-                        self.parallel_state = 2
-                        old_detections, self.old_class_map_detection = self.parallel_detector.result()
-                        self.stats_logger.push_log({'num_detections': len(old_detections), 'tracker': False})
-                        self.logger.log_info('Parallel detections received; launching catchup')
-                        self.parallel_detector = self.parallel_executor.submit(self._execute_catchup, self.old_timestep,
-                                                                               old_detections, self.old_frame)
+                            self.parallel_state = 2
+                            self.handle_thread_result()
 
-                    elif self.parallel_state == 2:
-                        self.logger.log_debug('Catchup marked as completed; retrieving information.')
-                        if self.parallel_detector.exception():
-                            err = self.parallel_detector.exception()
-                            raise NotImplementedError(f'Catchup thread errored for some reason: {str(err)}')
-                        self.logger.log_debug('Successfully received catchup information.')
-                        self.parallel_state = 0
-                        if self.tracking:
-                            self.logger.log_info('Re-setting self.tracker.')
-                            self.class_map_detection = self.old_class_map_detection
-                            new_tracker, logs = self.parallel_detector.result()
-                            self.tracker = new_tracker
-                            self.old_class_map_detection = None
-                            self.stats_logger.push_log(logs)
-                            self.stats_logger.push_log({'reset_tracker' : True, 'reset_i' : self.old_timestep,})
+                        elif self.parallel_state == 2:
+                            self.logger.log_debug('Catchup marked as completed; retrieving information.')
+                            if self.parallel_thread.exception():
+                                err = self.parallel_thread.exception()
+                                raise NotImplementedError(f'Catchup thread errored for some reason: {str(err)}')
+                            self.logger.log_debug('Successfully received catchup information.')
+                            self.parallel_state = 0
+                            self.parallel_thread = None
 
-                        self.parallel_detector = None
+                    elif self.parallel_thread.running():
+                        # do nothing if it is still running
+                        pass
+                    else:
+                        raise NotImplementedError('No other status exists.')
 
-                elif self.parallel_detector.running():
-                    # do nothing if it is still running
-                    pass
-                else:
-                    raise NotImplementedError('No other status exists.')
-
-            self.catchup_frames.append(data) # append data after retrieving new information
+                self.tracker.waiting_step(data)
 
         return None
 
@@ -469,17 +589,28 @@ class Client:
         self.stats_logger.push_log({'missing_preds' : missing_preds, **pred_scores}, append=False)
         return
 
-    def launch_detection(self, data, class_info, gt, d, now):
-        '''creates a thread that gets the detections and submits it to threadpoolexecutor;
-        also stores info of the detector'''
-        self.logger.log_info('Launching parallel detection.')
-        self.parallel_detector = self.parallel_executor.submit(self.get_detections, data, class_info, gt, d, now)
+    def eval_segmentation(self, gt_mask, pred_mask, *kargs):
+        # TODO: function
+        eval_segmentation(gt_mask, pred_mask)
+        self.logger.log_info('Segmentation evaluation not implemented yet.')
+        pass
+
+    def _reset_state_on_launch(self, data):
         self.parallel_state = 1
-        self.old_frame = data
         self.old_timestep = self.k
         self.old_start_counter = self.start_counter
-        self.catchup_frames = []
         self.stats_logger.push_log({'parallel_i': self.old_timestep})
+
+    def launch_prediction(self, data, class_info, gt, d, now):
+        '''creates a thread that gets the detections and submits it to threadpoolexecutor;
+                also stores info of the detector'''
+        if self.is_detection():
+            self.logger.log_info('Launching parallel detection.')
+        elif self.is_segmentation():
+            self.logger.log_info('Launching parallel segmentation.')
+
+        self.parallel_thread = self.parallel_executor.submit(self.get_pred, data, class_info, gt, d, now)
+        self._reset_state_on_launch(data)
 
     def start_loop(self):
         try:
@@ -488,72 +619,81 @@ class Client:
                 # TODO: wrap into function for easier external testing
                 self.logger.log_info(f'Starting iteration {i}')
 
+                assert self.run_type in ('BB', 'SM'), 'No other type of run'
+
+                data, size_orig, class_info, gt, fname, start = d
+                self.stats_logger.push_log({'iter' : i, 'fname' : fname})
+
+                # get the gt detections in {object : info} for eval
+                gt_preds = self.get_gt(class_info, gt)
                 if self.run_type == 'BB':
+                    self.logger.log_debug(f'num gt_detections : {len(gt_preds)}')
+                elif self.run_type == 'SM':
+                    self.logger.log_debug(f'Got gt mask; type {type(gt_preds)}')
 
-                    data, size_orig, class_info, gt, fname, start = d
-                    self.stats_logger.push_log({'iter' : i, 'fname' : fname})
+                # first check if the parallel detection process has completed
+                self.update_parallel_states(data)
 
-                    # get the gt detections in {object : bbox} for eval
-                    gt_detections = get_gt_detections_as_pred(class_info, gt)
-                    self.logger.log_debug(f'num gt_detections : {len(gt_detections)}')
+                if start: # start; no parallelization because tracker is not initialized
+                    # TODO: handle starts with parallel_run better
+                    self.k = 1
+                    self.start_counter += 1
+                    self.logger.log_info('Start of loop; initializing bounding box labels.')
 
-                    # first check if the parallel detection process has completed
-                    self.update_parallel_states(data)
+                    pred, self.class_map_detection = self.get_pred(data, class_info, gt, d,
+                                                                   end_of_previous_iteration,
+                                                                   start=True)
+                    self.stats_logger.push_log({'num_preds' : len(pred)})
+                    self._reinit_tracker(data, pred)
 
-                    if start: # start; no parallelization because tracker is not initialized
-                        # TODO: handle starts with parallel_run better
-                        self.k = 1
-                        self.start_counter += 1
-                        self.logger.log_info('Start of loop; initializing bounding box labels.')
-                        detections, self.class_map_detection = self.get_detections(data, class_info, gt, d,
-                                                                                   end_of_previous_iteration, start=True)
-                        # log number of detections (useful for eval tracker time)
-                        self.stats_logger.push_log({'num_detections': len(detections), 'tracker' : False})
-                        self._reinit_tracker(data, detections)
+                    self.stats_logger.push_log({'tracker': False})
 
-                    elif self.check_detection_refresh(): # get new bounding box, parallelize if applicable
-                        # TODO: do nothing, delay detection refresh instead of AssertError
-                        self.logger.log_info('Detection refresh criteria fulfilled – regenerating bbox.')
-                        if self.parallel_run: # detections parallelized
-                            assert self.parallel_state == 0, 'There is still a parallel process running at this time.'
-                            self.launch_detection(data, class_info, gt, d, end_of_previous_iteration)
+                elif self.check_detection_refresh(): # get new bounding box, parallelize if applicable
+                    # TODO: do nothing, delay detection refresh instead of AssertError
+                    self.logger.log_info('Detection refresh criteria fulfilled – regenerating bbox.')
+                    if self.parallel_run: # detections parallelized
+                        assert self.parallel_state == 0, 'There is still a parallel process running at this time.'
 
-                            # get detections for current timestamp
-                            self.logger.log_debug('Using tracker for bounding boxes (executed detection separately).')
-                            detections = self.get_tracker_bounding_box(data)
-                            self.stats_logger.push_log({'num_detections': len(detections), 'tracker': True})
-                            if detections is None:
-                                detections = gt_detections
+                        # get detections for current timestamp
+                        self.logger.log_debug('Using tracker for bounding boxes (executed detection separately).')
+                        self.launch_prediction(data, class_info, gt, d, end_of_previous_iteration)
+                        pred = self.get_tracker_pred_from_frame(data)
 
-                        else: # detections in thread
-                            detections, self.class_map_detection = self.get_detections(data, class_info, gt, d,
-                                                                                       end_of_previous_iteration)
-                            self._reinit_tracker(data, detections)
+                    else: # detections in thread
+                        pred, self.class_map_detection = self.get_pred(data, class_info, gt, d,
+                                                                       end_of_previous_iteration,
+                                                                       start=True)
+                        self.stats_logger.push_log({'num_preds': len(pred)})
+                        self._reinit_tracker(data, pred)
 
-                    else: # use tracker to get new bb
-                        # detections here should be in the format of {object : bbox} as there is no
-                        # class matching (inside class_map_detection)
-                        self.logger.log_debug('Using tracker for bounding boxes.')
-                        detections = self.get_tracker_bounding_box(data)
-                        if detections is None:
-                            detections = gt_detections
+                        self.stats_logger.push_log({'tracker': False})
 
-                    self.stats_logger.push_log({'iter_k': self.k})
+                else: # use tracker to get new bb
+                    # detections here should be in the format of {object : bbox} as there is no
+                    # class matching (inside class_map_detection)
+                    self.logger.log_debug('Using tracker for bounding boxes.')
+                    pred = self.get_tracker_pred_from_frame(data)
 
-                    self.k += 1
+                if pred is None:
+                    pred = gt_preds
 
-                    if self.run_eval:
-                        self.eval_detections(gt_detections, detections, self.class_map_detection)
+                self.stats_logger.push_log({'iter_k': self.k})
 
-                else:
-                    raise NotImplementedError('No other type of run besides bounding box')
+                self.k += 1
+
+                if self.run_eval:
+                    if self.run_type == 'BB':
+                        self.eval_detections(gt_preds, pred, self.class_map_detection)
+                    elif self.run_type == 'SM':
+                        self.eval_segmentation(gt_preds, pred)
 
                 # push log
                 self.stats_logger.push_log({}, append=True)
 
                 # TODO: make postprocessing more flexible
-                self.detection_postprocess({'detections' : detections, 'gt_detections' : gt_detections, 'frame' : data,
-                                            'iteration' : self.k-1, 'mapping' : self.class_map_detection})
+                if self.run_type == 'BB':
+                    self.detection_postprocess({'detections' : pred, 'gt_detections' : gt, 'frame' : data,
+                                                'iteration' : self.k-1, 'mapping' : self.class_map_detection})
                 end_of_previous_iteration = time.time()
 
         except Exception as ex:
@@ -577,21 +717,9 @@ class Client:
         if self.parallel_run:
             self.parallel_executor.shutdown()
 
-def get_student_model(yaml_file = PARAMS['FASTER_RCNN_YAML']):
-    if yaml_file is None:
-        return None
-
-    config = yaml_util.load_yaml_file(os.path.expanduser(yaml_file))
-    models_config = config['models']
-    student_model_config = models_config['student_model'] if 'student_model' in models_config else models_config[
-        'model']
-    student_model = load_model(student_model_config, PARAMS['DETECTION_DEVICE']).eval()
-
-    return student_model
-
 #main functionality for testing/debugging
 if __name__ == '__main__':
     cp = Client()
 
-    cp.start(PARAMS['HOST'], PARAMS['PORT'])
+    cp.start_client(PARAMS['HOST'], PARAMS['PORT'])
     cp.start_loop()

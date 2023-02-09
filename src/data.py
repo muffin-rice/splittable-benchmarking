@@ -27,6 +27,8 @@ class Dataset:
             self.dataset = self.get_model_toy_dataset()
         elif dataset == 'kitti':
             self.dataset = self.get_kitti_dataset()
+        elif dataset == 'davis':
+            self.dataset = self.get_davis_dataset()
         else:
             raise NotImplementedError('No Dataset Found.')
 
@@ -161,11 +163,6 @@ class Dataset:
 
                 yield byte_encoding, (frames_size, encoding_size), full_fname
 
-    def get_davis_dataset(self, codec='avc1', frame_limit = PARAMS['FRAME_LIMIT']):
-        pass
-        # for dtype in
-        # frame_i = (9, 9+frame_limit)
-        # for i in range(frame_i[0], frame_i[1]):
 
     def get_model_toy_dataset(self, col_names=PARAMS['KITTI_NAMES']):
         # uses the KITTI dataset for latency evals
@@ -263,3 +260,46 @@ class Dataset:
                 bb_list = list(zip(x0s, y0s, x1s, y1s))
 
                 yield img, sys.getsizeof(img), (classes_id, object_ids), bb_list, fname, j == 0
+
+    def get_davis_dataset(self, shape=PARAMS['VIDEO_SHAPE'], frame_limit = PARAMS['FRAME_LIMIT']):
+        data_dir = f'{self.data_dir}/DAVIS'
+        video_categories = os.listdir(f'{data_dir}/JPEGImages/Full-Resolution')
+
+        time_per_frame = 1 / self.simulated_fps
+
+        for video_cat in video_categories:
+            assert len(os.listdir(f'{data_dir}/JPEGImages/Full-Resolution/{video_cat}')) == \
+                   len(os.listdir(f'{data_dir}/Annotations/Full-Resolution/{video_cat}'))
+            vid_frame_nums = sorted([x for x in os.listdir(f'{data_dir}/JPEGImages/Full-Resolution/{video_cat}')
+                                     if '.jpg' in x or '.png' in x])
+            video_frames = [f'{data_dir}/JPEGImages/Full-Resolution/{video_cat}/{x}' for x in vid_frame_nums]
+
+            mask_frame_nums = sorted([x for x in os.listdir(f'{data_dir}/Annotations/Full-Resolution/{video_cat}')
+                                      if '.jpg' in x or '.png' in x])
+            mask_frames = [f'{data_dir}/Annotations/Full-Resolution/{video_cat}/{x}' for x in mask_frame_nums]
+
+            obj_classes = DAVIS_PASCAL_MAP[video_cat] # ordered in terms of RGB
+            # obj_ids = tuple(range(len(obj_classes) + 1))
+
+            time_since_previous_frame = time.time()
+            for i in range(len(video_frames)):
+                while time.time() - time_since_previous_frame < time_per_frame:
+                    time.sleep(0.005)
+
+                time_since_previous_frame = time.time()
+
+                vid_frame = Image.open(video_frames[i])
+                mask_frame = Image.open(mask_frames[i])
+                if shape is None:
+                    vid_frame = np.array(vid_frame)
+                    mask_frame = np.array(mask_frame)
+                else:
+                    vid_frame = np.array(vid_frame.resize(shape))
+                    mask_frame = np.array(mask_frame.resize(shape))
+
+                assert len(mask_frame.shape) == 2
+
+                obj_ids = np.unique(mask_frame)
+                # mask_ids = np.zeros_like(mask_frame)
+
+                yield vid_frame, sys.getsizeof(vid_frame), (obj_classes, obj_ids), mask_frame, video_frames[i], i==0

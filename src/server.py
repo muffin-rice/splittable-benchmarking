@@ -4,6 +4,9 @@ import time
 import sys
 from socket import *
 from struct import pack, unpack
+
+import torch
+
 from params import PARAMS, CURR_DATE
 from Logger import ConsoleLogger, DictionaryStatsLogger
 from utils2 import *
@@ -11,54 +14,62 @@ import traceback
 
 from torchdistill.common import yaml_util
 
-def get_student_model(yaml_file = PARAMS['FASTER_RCNN_YAML']):
-    if yaml_file is None:
-        return None
-
-    config = yaml_util.load_yaml_file(os.path.expanduser(yaml_file))
-    models_config = config['models']
-    student_model_config = models_config['student_model'] if 'student_model' in models_config else models_config[
-        'model']
-    student_model = load_model(student_model_config, PARAMS['DETECTION_DEVICE']).eval()
-
-    return student_model
-
 class Server:
     '''Class for server operations. No functionality for offline evaluation (server does not do any eval).'''
 
-    def _init_model(self):
-        if self.detection_compression == 'model':
-            # all of these should be using a yaml file (student model)
-            if self.detector_model == 'faster_rcnn':
-                student_model = get_student_model(PARAMS['FASTER_RCNN_YAML'])
+    def _init_model(self, server_path = PARAMS['SERVER_MODEL_PATH']):
+        if self.compressor == 'model':
+            self.logger.log_info(f'Setting up model {self.model_name}')
+            student_model = get_student_model()
+
+            if self.model_name == 'faster_rcnn':
                 from split_models.model_2 import ServerModel
+                self.server_model = ServerModel(student_model)
+            elif self.model_name == 'deeplabv3':
+                from split_models.model_3 import ServerModel
                 self.server_model = ServerModel(student_model)
             else:
                 raise NotImplementedError('No other models have been implemented yet.')
-        elif self.detection_compression == 'classical':
-            if self.detector_model == 'faster_rcnn':
+
+            if server_path:
+                self.server_model.load_state_dict(torch.load(server_path))
+
+        elif self.compressor == 'classical':
+            if self.model_name == 'faster_rcnn':
                 from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2
                 self.server_model = fasterrcnn_resnet50_fpn_v2(pretrained=True).eval()
-            elif self.detector_model == 'mask_rcnn':
+            elif self.model_name == 'mask_rcnn':
                 from torchvision.models.detection import maskrcnn_resnet50_fpn
                 self.server_model = maskrcnn_resnet50_fpn(pretrained=True).eval()
-            elif self.detector_model == 'retinanet':
+            elif self.model_name == 'retinanet':
                 from torchvision.models.detection import retinanet_resnet50_fpn
                 self.server_model = retinanet_resnet50_fpn(pretrained=True).eval()
+            elif self.model_name == 'deeplabv3':
+                from torchvision.models.segmentation import deeplabv3_resnet50
+                self.server_model = deeplabv3_resnet50(weights='DEFAULT').eval()
             else:
                 raise NotImplementedError
 
-        self.server_model.to(self.detector_device)
+        self.server_model.to(self.server_device)
 
         pass
 
-    def __init__(self, server_connect = PARAMS['USE_NETWORK'], detection_compression = PARAMS['DET_COMPRESSOR'],
-                 detector_model = PARAMS['DETECTOR_MODEL'], detector_device = PARAMS['DETECTION_DEVICE'],
-                 socket_buffer_size = PARAMS['SOCK_BUFFER_SIZE'], log_stats = PARAMS['LOG_STATS']):
+    def __init__(self, server_connect = PARAMS['USE_NETWORK'], compressor = PARAMS['COMPRESSOR'],
+                 model_name = PARAMS['MODEL_NAME'], server_device = PARAMS['SERVER_DEVICE'],
+                 socket_buffer_size = PARAMS['SOCK_BUFFER_SIZE'], log_stats = PARAMS['LOG_STATS'],
+                 task = PARAMS['TASK']):
         self.socket, self.connection, self.server_connect, self.socket_buffer_size = None, None, server_connect, socket_buffer_size
-        self.data, self.logger, self.stats_logger = None, ConsoleLogger(), DictionaryStatsLogger(f"{PARAMS['STATS_LOG_DIR']}/server-{PARAMS['DATASET']}-{CURR_DATE}.log", log_stats=log_stats)
-        self.detection_compression, self.detector_model, self.detector_device = detection_compression, detector_model, detector_device
+        self.data, self.logger = None, ConsoleLogger()
+        self.stats_logger = DictionaryStatsLogger(f"{PARAMS['STATS_LOG_DIR']}/server-{PARAMS['DATASET']}-{CURR_DATE}.log", log_stats=log_stats)
+        self.task = task
+        self.compressor, self.model_name, self.server_device = compressor, model_name, server_device
         self._init_model()
+
+    def is_detection(self):
+        return self.task == 'det'
+
+    def is_segmentation(self):
+        return self.task == 'seg'
 
     def listen(self, server_ip, server_port):
         self.socket = socket(AF_INET, SOCK_STREAM)
@@ -120,15 +131,17 @@ class Server:
 
     def process_data(self, client_data):
         '''processes the message using one of the detection models'''
-        if self.detection_compression == 'model':
-            client_data_device = move_data_list_to_device(client_data, self.detector_device)
-            if self.detector_model == 'faster_rcnn':
+        if self.compressor == 'model':
+            client_data_device = move_data_list_to_device(client_data, self.server_device)
+            if self.model_name == 'faster_rcnn':
                 model_outputs = self.server_model(*client_data_device)[0]
+            elif self.model_name == 'deeplabv3':
+                model_outputs = self.server_model(*client_data_device)
             else:
                 raise NotImplementedError('No specified detector model exists.')
-        elif self.detection_compression == 'classical':
+        elif self.compressor == 'classical':
             decoded_frame = decode_frame(client_data)
-            model_outputs = self.server_model([torch.from_numpy(decoded_frame).float().to(self.detector_device)])[
+            model_outputs = self.server_model([torch.from_numpy(decoded_frame).float().to(self.server_device)])[
                 0]  # first frame
         else:
             raise NotImplementedError('No other compression method exists.')
