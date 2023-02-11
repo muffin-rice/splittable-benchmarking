@@ -110,22 +110,40 @@ class Dataset:
 
                 yield byte_encoding, (frames_size, encoding_size), full_fname
 
-    def get_virat_dataset(self):
-        virat_dir = f'{self.data_dir}/VIRAT'
-        fnames = [fname for fname in os.listdir(virat_dir) if
+    def get_virat_dataset(self, col_names=PARAMS['VIRAT_NAMES']):
+        videos_dir = f'{self.data_dir}/VIRAT/videos'
+        annotations_dir = f'{self.data_dir}/VIRAT/annotations'
+        fnames = [fname for fname in os.listdir(videos_dir) if
                   '.mp4' in fname]  # remove .DS_Store and other misc files
         for fname in fnames:
-            full_fname = f'{virat_dir}/{fname}'
-            cap = cv2.VideoCapture(full_fname)
+            video_fname = f'{videos_dir}/{fname}'
+            annotation_fname = f'{annotations_dir}/{fname[:-4]}.viratdata.objects.txt'  # fix type
+            cap = cv2.VideoCapture(video_fname)
+            # success, frames = extract_frames(cap, frame_limit=frame_limit, transpose_frame=transpose, vid_shape=shape)
+            # ret, byte_info = self.open_fname(video_fname)
+            annotation_df = pd.read_csv(annotation_fname, delimiter=' ', header=None, names=col_names)
+            i = -1  # frame number
+            success, frame = cap.read()
+            while success:
+                i += 1
+                df_slice = annotation_df.loc[annotation_df['frame_num'] == i]
 
-            for i in range(20): # load 20 random frames / video
-                ret, byte_info = self.open_fname(full_fname, cap=cap)
-                if not ret:
-                    continue
+                object_ids = list(df_slice['object_id'])
+                classes_id = list(df_slice['class_name'])
 
-                byte_encoding, (frames_size, encoding_size) = byte_info
+                x0s = list(df_slice['x'])
+                y0s = list(df_slice['y'])
+                ws = list(df_slice['w'])
+                hs = list(df_slice['h'])
 
-                yield byte_encoding, (frames_size, encoding_size), full_fname
+                x1s = [x0s[j] + ws[j] for j in range(len(x0s))]
+                y1s = [x1s[k] + hs[k] for k in range(len(x1s))]
+
+                bb_list = list(zip(x0s, y0s, x1s, y1s))
+
+                success, frame = cap.read()
+
+                yield frame, sys.getsizeof(frame), (classes_id, object_ids), bb_list, video_fname, i == 0
 
     def get_youcook2_dataset(self):
         yc2_dir = f'{self.data_dir}/YouCook2/raw_videos/validation'

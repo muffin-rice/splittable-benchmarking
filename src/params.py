@@ -33,6 +33,8 @@ PARAMS['VIDEO_SHAPE'] = (1280,720)
 # params for individual datasets
 PARAMS['DAVIS_SCENES'] = [1,2,3,4,5,6,7,8,9,10]
 PARAMS['KITTI_NAMES'] = ['timestep', 'object_i', 'class_name', '_1', '_2', '_3', 'x0', 'y0', 'x1', 'y1', '_4', '_5', '_6', '_7', '_8', '_9', '_10']
+PARAMS['VIRAT_NAMES'] = ['object_id', 'duration', 'frame_num', 'x', 'y', 'w', 'h', 'class_name']
+PARAMS['VIRAT_CLASSES'] = {1:'person', 2:'car', 3:'vehicles', 4:'object', 5:'bike'}
 
 # params for model yamls and paths
 PARAMS['FASTER_RCNN_YAML'] = 'configs/coco2017/supervised_compression/entropic_student/faster_rcnn_splittable_resnet50-fp-beta0.08_fpn_from_faster_rcnn_resnet50_fpn.yaml'
@@ -66,6 +68,8 @@ PARAMS['STUDENT_YAML'] = PARAMS[f'{PARAMS["MODEL_NAME"].upper()}_YAML'] # yaml f
 # params for detection 'refreshes'
 PARAMS['BOX_REFRESH'] = 'fixed' # method to refresh bbox
 PARAMS['REFRESH_ITERS'] = 10 # for fixed method, how many fixed iterations to refresh bb; setting iters to 1 makes detection run 100%
+
+PARAMS['DATA_PICKLE_FILES'] = None
 
 try:
   from param_overrides import PARAM_OVERRIDES
