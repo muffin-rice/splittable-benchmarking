@@ -8,15 +8,15 @@ class ConsoleLogger:
 
     def log_debug(self, message):
         if self.level <= LEVELS['DEBUG']:
-            print(f'[DEBUG] {datetime.now().strftime(self.dateformat)}: {message}')
+            print(f'[DEBUG]\t{datetime.now().strftime(self.dateformat)}: {message}')
 
     def log_info(self, message):
         if self.level <= LEVELS['INFO']:
-            print(f'[INFO] {datetime.now().strftime(self.dateformat)}: {message}')
+            print(f'[INFO]\t{datetime.now().strftime(self.dateformat)}: {message}')
 
     def log_error(self, message):
         if self.level <= LEVELS['ERROR']:
-            print(f'[ERROR] {datetime.now().strftime(self.dateformat)}: {message}')
+            print(f'[ERROR]\t{datetime.now().strftime(self.dateformat)}: {message}')
 
 class DictionaryStatsLogger:
     def __init__(self, logfile, log_stats = True, flush_limit = PARAMS['FLUSH_LIMIT']):

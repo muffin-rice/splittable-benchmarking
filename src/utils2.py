@@ -329,7 +329,7 @@ def lab2rgb(img):
 
 
 def separate_segmentation_mask(mask : np.array, OBJECT_LIMIT = 20) -> {int : np.array}:
-    '''given a segmentation of pixels where each pixel value corresponds to a specific class,
+    '''given a segmentation of pixels where each pixel value corresponds to a specific object,
     return the separated segmentation mask by object id '''
     object_ids = np.unique(mask)
     assert len(object_ids) < OBJECT_LIMIT, 'too many objects in segmentation scene'
