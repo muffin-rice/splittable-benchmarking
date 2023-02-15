@@ -3,4 +3,5 @@
 __pycache__/
 .editorconfig
 resource/
+data
 param_overrides.py
