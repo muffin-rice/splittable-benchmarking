@@ -12,8 +12,6 @@ from Logger import ConsoleLogger, DictionaryStatsLogger
 from utils2 import *
 import traceback
 
-from torchdistill.common import yaml_util
-
 class Server:
     '''Class for server operations. No functionality for offline evaluation (server does not do any eval).'''
 
@@ -113,7 +111,7 @@ class Server:
             # send our 0 ack
             self.connection.sendall(b'\00')
 
-            return self.parse_message(pickle.loads(data))
+            return pickle.loads(data)
 
     def parse_message(self, message):
         '''logs the latency (message['latency']) and returns the data (message['data')'''
@@ -160,7 +158,17 @@ class Server:
             # effectively time waiting for client
             time_since_processed_lass_message = time.time()
             while True:
-                data = self.get_client_data() # data  .shape
+                if PARAMS['FILE_TRANSFER']:
+                    # send data over
+                    fnames = self.get_client_data()
+                    # data should be in the format of a list of fnames
+                    byte_files = []
+                    for fname in fnames:
+                        with open(f'{PARAMS["DATA_DIR"]}/{fname}', 'rb') as f:
+                            byte_files.append(f.read())
+                    self.send_response(fnames)
+
+                data = self.parse_message(self.get_client_data()) # data  .shape
                 self.logger.log_debug(f'Finished getting client data.')
 
                 curr_time = time.time()

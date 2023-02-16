@@ -24,11 +24,17 @@ def get_student_model(yaml_file = PARAMS['STUDENT_YAML']):
 
     config = load_yaml_file(os.path.expanduser(yaml_file))
     models_config = config['models']
+
     if PARAMS['MODEL_NAME'] == 'deeplabv3':
         models_config['student_model'][
             'ckpt'] = 'Models/yoshi/entropic/pascal_voc2012-deeplabv3_splittable_resnet50-fp-beta0.16_from_deeplabv3_resnet50.pt'
         models_config['student_model']['params']['backbone_config'][
             'ckpt'] = 'Models/yoshi/entropic/ilsvrc2012-splittable_resnet50-fp-beta0.16_from_resnet50.pt'
+    elif PARAMS['MODEL_NAME'] == 'faster_rcnn':
+        models_config['student_model'][
+            'ckpt'] = 'Models/yoshi/entropic/coco2017-faster_rcnn_splittable_resnet50-fp-beta0.08_fpn_from_faster_rcnn_resnet50_fpn.pt'
+        models_config['student_model']['params']['backbone_config'][
+            'ckpt'] = 'Models/yoshi/entropic/ilsvrc2012-splittable_resnet50-fp-beta0.08_from_resnet50.pt'
 
     student_model_config = models_config['student_model'] if 'student_model' in models_config else models_config[
         'model']

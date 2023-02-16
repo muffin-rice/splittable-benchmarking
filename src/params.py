@@ -3,8 +3,7 @@ from datetime import datetime
 # constants, COCO constants defined below
 LEVELS = {'DEBUG' : 0, 'INFO' : 1, 'ERROR' : 2, 'NOTHING' : 3}
 # KITTI classes (1,2,3) match COCO, ignore Vans
-KITTI_CLASSES = {'DontCare' : -1, 'Van': 0, 'Cyclist' : 2, 'Pedestrian' : 1, 'Car' : 3, 'Misc' : 4,
-                 'Truck' : 8, 'Tram' : 10, 'Person' : 1}
+
 CURR_DATE = datetime.now().strftime('%m-%d_%H:%M:%S')
 DESIRED_CLASSES = {1,2,3}
 
@@ -32,9 +31,6 @@ PARAMS['FPS'] = 30.
 PARAMS['VIDEO_SHAPE'] = (1280,720)
 # params for individual datasets
 PARAMS['DAVIS_SCENES'] = [1,2,3,4,5,6,7,8,9,10]
-PARAMS['KITTI_NAMES'] = ['timestep', 'object_i', 'class_name', '_1', '_2', '_3', 'x0', 'y0', 'x1', 'y1', '_4', '_5', '_6', '_7', '_8', '_9', '_10']
-PARAMS['VIRAT_NAMES'] = ['object_id', 'duration', 'frame_num', 'x', 'y', 'w', 'h', 'class_name']
-PARAMS['VIRAT_CLASSES'] = {1:'person', 2:'car', 3:'vehicles', 4:'object', 5:'bike'}
 
 # params for model yamls and paths
 PARAMS['FASTER_RCNN_YAML'] = 'configs/coco2017/supervised_compression/entropic_student/faster_rcnn_splittable_resnet50-fp-beta0.08_fpn_from_faster_rcnn_resnet50_fpn.yaml'
@@ -69,15 +65,50 @@ PARAMS['STUDENT_YAML'] = PARAMS[f'{PARAMS["MODEL_NAME"].upper()}_YAML'] # yaml f
 PARAMS['BOX_REFRESH'] = 'fixed' # method to refresh bbox
 PARAMS['REFRESH_ITERS'] = 10 # for fixed method, how many fixed iterations to refresh bb; setting iters to 1 makes detection run 100%
 
-PARAMS['DATA_PICKLE_FILES'] = None
+# params for when client requests files from the server
+PARAMS['FILE_TRANSFER'] = False
+PARAMS['DATA_PICKLE_FILES'] = None # pickle of a list of batches of fnames (ie fnames in the format of 'VIRAT/videos/...')
+PARAMS['FILE_LANDING_DIR'] = ''
 
 try:
   from param_overrides import PARAM_OVERRIDES
   print('USING PARAM OVERRIDES')
   PARAMS.update(PARAM_OVERRIDES)
-except:
+except ImportError:
   print('NO PARAM OVERRIDES DETECTED')
   pass
+
+VIRAT_COLS = ['object_id', 'duration', 'frame_num', 'x', 'y', 'w', 'h', 'class_name']
+
+VIRAT_CLASSES = {
+ 1:'person',
+ 2:'car',
+ 3:'vehicles',
+ 4:'object',
+ 5:'bike'
+}
+
+VIRAT_COCO_MAP = {
+ 1: 1,
+ 2: 3,
+ 3: 3,
+ 4: 0,
+ 5: 2
+}
+
+KITTI_COLS = ['timestep', 'object_i', 'class_name', '_1', '_2', '_3', 'x0', 'y0', 'x1', 'y1', '_4', '_5', '_6', '_7', '_8', '_9', '_10']
+
+KITTI_CLASSES = {
+ 'DontCare' : -1,
+ 'Van': 0,
+ 'Cyclist' : 2,
+ 'Pedestrian' : 1,
+ 'Car' : 3,
+ 'Misc' : 4,
+ 'Truck' : 8,
+ 'Tram' : 10,
+ 'Person' : 1
+}
 
 COCO_CLASS_DICT = {
  0: u'__background__',

@@ -110,11 +110,14 @@ class Dataset:
 
                 yield byte_encoding, (frames_size, encoding_size), full_fname
 
-    def get_virat_dataset(self, col_names=PARAMS['VIRAT_NAMES']):
+    def get_virat_dataset(self, col_names=VIRAT_COLS, class_mapping = VIRAT_COCO_MAP):
         videos_dir = f'{self.data_dir}/VIRAT/videos'
         annotations_dir = f'{self.data_dir}/VIRAT/annotations'
         fnames = [fname for fname in os.listdir(videos_dir) if
                   '.mp4' in fname]  # remove .DS_Store and other misc files
+
+        time_per_frame = 1 / self.simulated_fps
+
         for fname in fnames:
             video_fname = f'{videos_dir}/{fname}'
             annotation_fname = f'{annotations_dir}/{fname[:-4]}.viratdata.objects.txt'  # fix type
@@ -124,12 +127,17 @@ class Dataset:
             annotation_df = pd.read_csv(annotation_fname, delimiter=' ', header=None, names=col_names)
             i = -1  # frame number
             success, frame = cap.read()
+            time_since_previous_frame = time.time()
             while success:
+                while time.time() - time_since_previous_frame < time_per_frame:
+                    time.sleep(0.005)
+
+                time_since_previous_frame = time.time()
                 i += 1
                 df_slice = annotation_df.loc[annotation_df['frame_num'] == i]
 
                 object_ids = list(df_slice['object_id'])
-                classes_id = list(df_slice['class_name'])
+                classes_id = [class_mapping[x] for x in list(df_slice['class_name'])]
 
                 x0s = list(df_slice['x'])
                 y0s = list(df_slice['y'])
@@ -182,7 +190,7 @@ class Dataset:
                 yield byte_encoding, (frames_size, encoding_size), full_fname
 
 
-    def get_model_toy_dataset(self, col_names=PARAMS['KITTI_NAMES']):
+    def get_model_toy_dataset(self, col_names=KITTI_COLS):
         # uses the KITTI dataset for latency evals
         # returns in the format (img, img_size, (class, obj_id), bb_list, fname, frame_number)
         data_dir = f'{self.data_dir}/KITTI/data_tracking_image_2/training'

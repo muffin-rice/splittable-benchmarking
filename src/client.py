@@ -5,8 +5,6 @@ from torch import nn
 
 import pickle
 import time
-import sys
-import argparse
 from params import PARAMS, CURR_DATE, DESIRED_CLASSES
 from Logger import ConsoleLogger, DictionaryStatsLogger
 from utils2 import *
@@ -52,7 +50,9 @@ def get_gt_detections_as_pred(class_info : ((int,), (int,)), boxes : [[int,],]) 
     return gt_boxes
 
 def get_gt_masks(class_info : ((int,), (int,)), gt_mask) -> {int : {int : np.array}}:
-    '''returns mask as class : object : map'''
+    '''reformats annotations into eval-friendly format
+    class_info is (class_ids, object_ids)
+    returns mask as {class : {object : map}}'''
     mask_maps = separate_segmentation_mask(gt_mask)
 
     assert len(class_info[1]) == len(mask_maps.keys()), f'keys are {class_info[1]} vs. {mask_maps.keys()}'
@@ -290,7 +290,7 @@ class Client:
             # send our 0 ack
             self.socket.sendall(b'\00')
 
-            self.logger.log_debug('Received message.')
+            self.logger.log_debug('Received message and sent ack.')
 
             return pickle.loads(data)
 
@@ -612,10 +612,11 @@ class Client:
         self.parallel_thread = self.parallel_executor.submit(self.get_pred, data, class_info, gt, d, now)
         self._reset_state_on_launch(data)
 
-    def start_loop(self):
+    def start_loop(self, start_i = 0):
         try:
             end_of_previous_iteration = time.time()
             for i, d in enumerate(self.dataset.get_dataset()):
+                i = i + start_i
                 # TODO: wrap into function for easier external testing
                 self.logger.log_info(f'Starting iteration {i}')
 
@@ -704,6 +705,37 @@ class Client:
             self.logger.log_info("Client loop ended.")
             self.close()
 
+    def start_loop2(self):
+        if not PARAMS['FILE_TRANSFER']:
+            self.start_loop()
+            return
+
+        # transfer files back and forth
+        all_server_fnames = pickle.load(PARAMS['DATA_PICKLE_FILES'])
+
+        start_i = 0
+        data_dir = PARAMS['FILE_LANDING_DIR']
+
+        for fname_batch in all_server_fnames:
+            self._send_encoded_data(fname_batch)
+            byte_files = self._get_server_data()
+
+            assert len(fname_batch) == len(byte_files)
+
+            for fname, byte_file in zip(fname_batch, byte_files):
+                self.logger.log_info(f'Starting with fname {fname}')
+                with open(f'{data_dir}/{fname}', 'wb') as f:
+                    f.write(byte_file)
+
+            self.start_loop(start_i = start_i)
+            # batch fname size fixed at 5
+            start_i += 5
+
+            # remove the files
+            for fname in fname_batch:
+                os.remove(f'{data_dir}/{fname}')
+
+
     def close(self):
         self.stats_logger.flush()
 
@@ -722,4 +754,4 @@ if __name__ == '__main__':
     cp = Client()
 
     cp.start_client(PARAMS['HOST'], PARAMS['PORT'])
-    cp.start_loop()
+    cp.start_loop2()
