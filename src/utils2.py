@@ -6,6 +6,7 @@ from params import PARAMS, DESIRED_CLASSES
 import torch
 from copy import deepcopy
 from skimage import color
+from scipy.optimize import linear_sum_assignment
 
 def default_detection_postprocessor(d):
     return
@@ -26,15 +27,15 @@ def get_student_model(yaml_file = PARAMS['STUDENT_YAML']):
     models_config = config['models']
 
     if PARAMS['MODEL_NAME'] == 'deeplabv3':
-        models_config['student_model'][
-            'ckpt'] = 'Models/yoshi/entropic/pascal_voc2012-deeplabv3_splittable_resnet50-fp-beta0.16_from_deeplabv3_resnet50.pt'
-        models_config['student_model']['params']['backbone_config'][
-            'ckpt'] = 'Models/yoshi/entropic/ilsvrc2012-splittable_resnet50-fp-beta0.16_from_resnet50.pt'
+        models_config['student_model']['ckpt'] = \
+            f'{PARAMS["ENTROPIC_DIR"]}/pascal_voc2012-deeplabv3_splittable_resnet50-fp-beta0.16_from_deeplabv3_resnet50.pt'
+        models_config['student_model']['params']['backbone_config']['ckpt'] = \
+            f'{PARAMS["ENTROPIC_DIR"]}/ilsvrc2012-splittable_resnet50-fp-beta0.16_from_resnet50.pt'
     elif PARAMS['MODEL_NAME'] == 'faster_rcnn':
-        models_config['student_model'][
-            'ckpt'] = 'Models/yoshi/entropic/coco2017-faster_rcnn_splittable_resnet50-fp-beta0.08_fpn_from_faster_rcnn_resnet50_fpn.pt'
-        models_config['student_model']['params']['backbone_config'][
-            'ckpt'] = 'Models/yoshi/entropic/ilsvrc2012-splittable_resnet50-fp-beta0.08_from_resnet50.pt'
+        models_config['student_model']['ckpt'] = \
+            f'{PARAMS["ENTROPIC_DIR"]}/coco2017-faster_rcnn_splittable_resnet50-fp-beta0.08_fpn_from_faster_rcnn_resnet50_fpn.pt'
+        models_config['student_model']['params']['backbone_config']['ckpt'] = \
+            f'{PARAMS["ENTROPIC_DIR"]}/ilsvrc2012-splittable_resnet50-fp-beta0.08_from_resnet50.pt'
 
     student_model_config = models_config['student_model'] if 'student_model' in models_config else models_config[
         'model']
@@ -101,34 +102,26 @@ def decode_frame(encoded_frame):
     '''decodes the encode_frame and returns it as a float array (between 0 and 1) and 3xHxW'''
     return cv2.imdecode(encoded_frame, cv2.IMREAD_COLOR).transpose(2,0,1) / 256
 
-def extract_frames(cap, frame_limit, vid_shape, transpose_frame = False) -> (bool, np.ndarray):
-    '''From a cv2 VideoCapture, return a random frame_limit subset of the video'''
+def extract_frames(cap, vid_shape = (720, 1280), frame_limit=150, transpose_frame = False) -> (bool, np.ndarray):
+    '''From a cv2 VideoCapture, return a stack of frame_limit subset of the video'''
     # get 15 frames from random starting point
-    video_length = cap.get(7)
-    if video_length < frame_limit:
-        return False, None
+    frame_limit = min(cap.get(7), frame_limit)
 
-    if vid_shape is None:
-        vid_shape = (720, 1280)
-
-    random_start = int(np.random.random() * (video_length - frame_limit))
     frames = []
-    for i in range(random_start, random_start + frame_limit):
-        cap.set(1, i)
-        ret, frame = cap.read()
-        if ret:
-            if transpose_frame:
-                frame = frame.transpose(1,0,2)
+    for i in range(frame_limit):
+        success, frame = cap.read()
+        if not success:
+            return False, np.array(frames)
 
-            if not (frame.shape[0] >= vid_shape[1] and frame.shape[1] >= vid_shape[0]):
-                return False, None
+        if transpose_frame:
+            frame = frame.transpose(1,0,2)
 
-            frames.append(cv2.resize(frame, dsize=vid_shape))
+        if vid_shape is None:
+            frames.append(frame)
         else:
-            return False, None
+            frames.append(cv2.resize(frame, dsize = vid_shape))
 
     return True, np.array(frames)
-
 def return_frames_as_bytes(frames : np.ndarray, temp_dir = PARAMS['DEV_DIR'], codec='avc1', fps = PARAMS['FPS'],
                            shape = PARAMS['VIDEO_SHAPE'], frame_limit = PARAMS['FRAME_LIMIT']) -> bytes:
     '''From a numpy array of frames (nframes x h x w x 3), return the compressed video (with a specific codec) as bytes'''
@@ -184,7 +177,7 @@ def calculate_bb_iou(boxA, boxB):
     # return the intersection over union value
     return iou
 
-def calc_mask_iou(maskA, maskB):
+def calculate_mask_iou(maskA, maskB):
     intersection = np.logical_and(maskA, maskB).sum()
     union = np.logical_or(maskA, maskB).sum()
 
@@ -194,7 +187,14 @@ def map_xyxy_to_xyhw(xyxy_box):
     return np.array((xyxy_box[0], xyxy_box[1], xyxy_box[2] - xyxy_box[0], xyxy_box[3] - xyxy_box[1]))
 
 def map_xyhw_to_xyxy(xyhw_box):
-    return np.array((xyhw_box[0], xyhw_box[1], xyhw_box[2] + xyhw_box[0], xyhw_box[3] + xyhw_box[1]))
+    xyxy_box = np.array((xyhw_box[0], xyhw_box[1], xyhw_box[2] + xyhw_box[0], xyhw_box[3] + xyhw_box[1]))
+    if xyxy_box[2] < xyxy_box[0]:
+        xyxy_box[0], xyxy_box[2] = xyxy_box[2], xyxy_box[0]
+
+    if xyxy_box[3] < xyxy_box[1]:
+        xyxy_box[1], xyxy_box[3] = xyxy_box[3], xyxy_box[1]
+
+    return xyxy_box
 
 def map_coco_outputs(outputs : {str : torch.Tensor}) -> ({int : {int : (int,)}}, [float]):
     '''Maps the model output (dict with keys boxes, labels, scores) to {class_label : {id : boxes}}'''
@@ -202,6 +202,10 @@ def map_coco_outputs(outputs : {str : torch.Tensor}) -> ({int : {int : (int,)}},
     labels = outputs['labels'].detach().numpy()
     scores = outputs['scores'].detach().numpy()
     # ignore scores for now
+
+    high_scores = scores>0.4
+
+    boxes, labels, scores = boxes[high_scores], labels[high_scores], scores[high_scores]
 
     d = {}
     curr_id = 0
@@ -219,6 +223,39 @@ def map_coco_outputs(outputs : {str : torch.Tensor}) -> ({int : {int : (int,)}},
 
     return d, scores
 
+def map_indexes(gt_objects : {int : any}, pred_objects : {int : any}, iou_calculator):
+    index_mapping = {}
+    if len(gt_objects) < len(pred_objects):
+        for id_gt, gt_pred in gt_objects.items():  # gt boxes on the outside
+            highscore, highj = -1, -1
+            for id_pred, pred_box in pred_objects.items():
+                if id_pred in index_mapping:
+                    continue
+
+                curr_score = iou_calculator(gt_pred, pred_box)
+
+                if curr_score >= highscore:
+                    highscore, highj, = curr_score, id_pred
+
+            index_mapping[highj] = id_gt
+    else:
+        used_gt = set()
+        for id_pred, pred in pred_objects.items():  # gt boxes on the outside
+            highscore, highj = -1, -1
+            for id_gt, gt_box in gt_objects.items():
+                if id_gt in used_gt:
+                    continue
+
+                curr_score = iou_calculator(gt_box, pred)
+
+                if curr_score >= highscore:
+                    highscore, highj, = curr_score, id_gt
+
+            index_mapping[id_pred] = highj
+            used_gt.add(highj)
+
+    return index_mapping
+
 def map_bbox_ids(pred_boxes_allclass : {int : {int : (int,)}}, gt_boxes_allclass : {int : (int,)}) -> ({int: int}, {int: int}):
     '''maps indices of the predicted boxes to the ids of the gt boxes and returns the extraneous items
     input is in the format {class_id : {object_id : bbox_xyxy}}
@@ -226,9 +263,9 @@ def map_bbox_ids(pred_boxes_allclass : {int : {int : (int,)}}, gt_boxes_allclass
     index_mapping = {}
 
     missing_objects = {} # for every class id, >0 means in gt but not in pred, <0 means in pred but not in gt
-    unioned_keys = set(gt_boxes_allclass.keys()).union(set(pred_boxes_allclass.keys()))
+    unioned_classes = set(gt_boxes_allclass.keys()).union(set(pred_boxes_allclass.keys()))
 
-    for class_id in unioned_keys:
+    for class_id in unioned_classes:
         if class_id not in pred_boxes_allclass:
             missing_objects[class_id] = len(gt_boxes_allclass[class_id])
             continue
@@ -240,88 +277,130 @@ def map_bbox_ids(pred_boxes_allclass : {int : {int : (int,)}}, gt_boxes_allclass
         gt_boxes, pred_boxes = gt_boxes_allclass[class_id], pred_boxes_allclass[class_id]
         missing_objects[class_id] = len(gt_boxes) - len(pred_boxes)
 
-        if len(gt_boxes) < len(pred_boxes):
-            for id_gt, gt_box in gt_boxes.items(): # gt boxes on the outside
-                highscore, highj = -1, -1
-                for id_pred, pred_box in pred_boxes.items():
-                    if id_pred in index_mapping:
-                        continue
-
-                    curr_score = calculate_bb_iou(gt_box, pred_box)
-
-                    if curr_score >= highscore:
-                        highscore, highj, = curr_score, id_pred
-
-                index_mapping[highj] = id_gt
-        else:
-            used_gt = set()
-            for id_pred, pred_box in pred_boxes.items(): # gt boxes on the outside
-                highscore, highj = -1, -1
-                for id_gt, gt_box in gt_boxes.items():
-                    if id_gt in used_gt:
-                        continue
-
-                    curr_score = calculate_bb_iou(gt_box, pred_box)
-
-                    if curr_score >= highscore:
-                        highscore, highj, = curr_score, id_gt
-
-                index_mapping[id_pred] = highj
-                used_gt.add(highj)
+        index_mapping.update(map_indexes(gt_boxes, pred_boxes, calculate_bb_iou))
 
     return index_mapping, missing_objects
 
-def remove_classes_from_detections(detections_with_classes : {int : {}}, add_clause = None, return_clause = None):
-    '''returns the {object_id : bbox} detections from a detections_with_classes and class map detection'''
+def remove_classes_from_pred(preds_with_classes : {int : {}}, add_clause = None, return_clause = None):
+    '''returns the {object_id : pred} detections from a pred_with_classes and object_mapping {object_id : self}'''
     if not add_clause:
         add_clause = lambda x : True
     if not return_clause:
         return_clause = lambda x : False
 
     detections = {}
-    class_map_detection = {}
-    for class_id, class_detection in detections_with_classes.items():
-        for object_id, bbox in class_detection.items():
+    object_id_mapping = {}
+    for class_id, class_detection in preds_with_classes.items():
+        for object_id, pred in class_detection.items():
+            object_id_mapping[object_id] = object_id
             if add_clause(object_id):
-                class_map_detection[object_id] : class_id
-                detections[object_id] = bbox
+                detections[object_id] = pred
 
             if return_clause(detections):
                 return detections
 
 
-    return detections, class_map_detection
+    return detections, object_id_mapping
 
-def eval_detections(gt_detections : {int : (int,)}, pred_detections : {int : (int,)},
-                    object_id_mapping : {int : int}) -> ({int : float}, {int}):
-    '''Detections are in the format of {object_id : [box]} and {pred_oid : gt_oid}
-    Returns in the format of {object_id (from either) : score}'''
-    # assert len(gt_detections) == len(generated_detections)
+def separate_objects_in_mask(mask, num_objects, starting_id = 1, num_iters = 10) -> {int : np.array}:
+    '''given a binary mask cluster the objects given the numobjects
+    returns random id : mask'''
+    assert len(np.unique(mask)) == 2, f'Mask is not binary: {mask}, {np.unique(mask)}'
+    if num_objects == 1:
+        return {starting_id : mask}
+
+    mask_indices = np.array(tuple(x for x in zip(*np.where(mask))))
+    start_inds = np.random.choice(np.arange(mask_indices.shape[0]), num_objects, replace=False)
+    cluster_starts = mask_indices[start_inds] # num_objects x 2
+    index_mask = np.indices((mask.shape[0], mask.shape[1])).transpose(1,2,0)
+
+    assert num_iters > 1
+
+    for i in range(num_iters):
+        mask_distances = np.zeros((num_objects, mask.shape[0], mask.shape[1]))
+        for j, cluster in enumerate(cluster_starts):
+            mask_distances[j, :, :] = np.linalg.norm(index_mask - cluster, ord=2)
+
+        # cluster mins is H x W array of the argmin
+        cluster_mins = np.argmin(mask_distances, axis = 0) + 1
+        cluster_mins = cluster_mins[mask]
+
+        # find the average of the centroids
+        for j in range(cluster_starts.shape[0]):
+            cluster_starts[j, :] = np.mean(index_mask[cluster_mins == j+1], axis=[0,1])
+
+    return {starting_id + i : cluster_mins[cluster_mins == i] for i in range(num_objects)}
+
+
+def map_mask_ids(pred_mask_allclasses : {int : np.array}, gt_mask_classes : {int : {int : np.array}}):
+    '''changes the mask id prediction itself, and returns the index mapping and missing detections
+    see map_bbox_ids'''
+    unioned_classes = set(pred_mask_allclasses.keys()).union(gt_mask_classes.keys())
+    index_mapping = {}
+    missing_objects = {}
+    starting_object_id = 1
+
+    for class_id in unioned_classes:
+        assert class_id in pred_mask_allclasses
+        assert 'array' in str(
+            type(pred_mask_allclasses[class_id])), f'this should be an array: {pred_mask_allclasses[class_id]}'
+
+        if not pred_mask_allclasses[class_id].any():
+            # mask does not predict anything; either it's not there or missing pred
+            pred_mask_allclasses.pop(class_id) # remove prediction
+            if class_id in gt_mask_classes:
+                missing_objects[class_id] = len(gt_mask_classes[class_id])
+
+            continue
+
+        if class_id not in gt_mask_classes:
+            pred_mask_allclasses[class_id] = {-1 : pred_mask_allclasses[class_id]}
+            missing_objects[class_id] = -len(pred_mask_allclasses[class_id])
+            continue
+
+        pred_mask_allclasses[class_id] = separate_objects_in_mask(pred_mask_allclasses[class_id],
+                                                                  len(gt_mask_classes[class_id]),
+                                                                  starting_id = starting_object_id)
+
+        gt_mask, pred_mask = gt_mask_classes[class_id], pred_mask_allclasses[class_id]
+        missing_objects[class_id] = len(gt_mask) - len(pred_mask)
+
+        index_mapping.update(map_indexes(gt_mask, pred_mask, calculate_mask_iou))
+
+    return index_mapping, missing_objects
+
+def eval_predictions(gt : {int : any}, pred : {int : any}, object_id_mapping : {int : int},
+                     metric_evaluator) -> ({int : float}, {int}):
     scores = {}
 
-    # see if any pred_detections are outdated
-    for object_id in pred_detections.keys():
+    for object_id in pred.keys():
         assert object_id in object_id_mapping
 
         gt_object_id = object_id_mapping[object_id]
         key_format = f'pred_{gt_object_id}'
 
-        if gt_object_id not in gt_detections: #in tracker but not in annotations
+        if gt_object_id not in gt: #in tracker but not in annotations
             scores[key_format] = -1
             continue
 
-        scores[key_format] = calculate_bb_iou(gt_detections[gt_object_id], pred_detections[object_id])
+        scores[key_format] = metric_evaluator(gt[gt_object_id], pred[object_id])
 
     # check if there are any missing detections
     pred_object_ids = set(object_id_mapping.values())
 
     missing_detections = set()
 
-    for gt_object_id in gt_detections.keys():
+    for gt_object_id in gt.keys():
         if gt_object_id not in pred_object_ids:
             missing_detections.add(gt_object_id)
 
     return scores, missing_detections
+
+def eval_detections(gt_detections : {int : (int,)}, pred_detections : {int : (int,)},
+                    object_id_mapping : {int : int}) -> ({int : float}, {int}):
+    '''Detections are in the format of {object_id : [box]} and {pred_oid : gt_oid}
+    Returns in the format of {object_id (from either) : score}'''
+    return eval_predictions(gt_detections, pred_detections, object_id_mapping, calculate_bb_iou)
 
 
 def rgb2lab(img):
@@ -336,16 +415,15 @@ def lab2rgb(img):
 
 def separate_segmentation_mask(mask : np.array, OBJECT_LIMIT = 20) -> {int : np.array}:
     '''given a segmentation of pixels where each pixel value corresponds to a specific object,
-    return the separated segmentation mask by object id '''
+    return {object_id : binary_mask} '''
     object_ids = np.unique(mask)
     assert len(object_ids) < OBJECT_LIMIT, 'too many objects in segmentation scene'
 
     return {int(object_id) : mask == object_id for object_id in object_ids}
 
 
-def get_bbox_from_mask(mask : np.array) -> [int]:
+def get_bbox_from_mask(binary_mask : np.array) -> [int]:
     '''given a 2D 0/1 binary input mask, output the xyhw bounding box'''
-    binary_mask = binarize_mask(mask)
 
     assert len(binary_mask.shape) == 2, 'dimenisons of binary mask are incorrect'
     assert tuple(np.unique(binary_mask)) == (0,1)
@@ -358,7 +436,7 @@ def get_bbox_from_mask(mask : np.array) -> [int]:
     return [x_min, x_max - x_min, y_min, y_max - y_min]
 
 def binarize_mask(mask : np.array) -> np.array:
-    binary_mask = np.zeros_like(mask)
+    binary_mask = np.zeros_like(mask, dtype=bool)
     mask -= mask.min()
     mask /= mask.max()
     binary_mask[mask>0.5] = 1
@@ -376,15 +454,123 @@ def combine_masks(object_masks : {int : np.array}) -> np.array:
 
     return initial_mask
 
-def eval_segmentation(gt_masks : {int : {int : np.array}}, pred_masks : {int : np.array}):
+def eval_segmentation(gt_masks : {int : np.array}, pred_masks : {int : np.array}, object_id_mapping : {int : int}):
     '''evals in the format of class_id : score'''
-    scores = {}
-    missing_preds = set()
-    for class_id, object_masks in gt_masks.items():
-        if class_id in pred_masks:
-            object_mask = combine_masks(object_masks)
-            scores[class_id] = calc_mask_iou(object_mask, pred_masks[class_id])
-        else:
-            missing_preds.add(class_id)
+    return eval_predictions(gt_masks, pred_masks, object_id_mapping, calculate_mask_iou)
 
-    return scores, missing_preds
+def eval_segmentation_diffmasks(gt_masks : {int : np.array}):
+    pass
+
+def segment_subimg_mrf(subimg):
+    height, width = subimg.shape[0], subimg.shape[1]
+
+    # Define the MRF parameters
+    n_states = 2
+    smoothness = 1.0
+
+    smooth_energy = 0
+    for i in range(height):
+        for j in range(width):
+            if i < height - 1:
+                smooth_energy += smoothness * np.sum(np.abs(subimg[i, j] - subimg[i + 1, j]))
+            if j < width - 1:
+                smooth_energy += smoothness * np.sum(np.abs(subimg[i, j] - subimg[i, j + 1]))
+
+    # Optimize the MRF using the Hungarian algorithm
+    row_ind, col_ind = linear_sum_assignment(np.array([[smooth_energy] * n_states]))
+
+    # Get the optimized binary segmentation mask
+    mask = np.zeros((height, width), dtype=np.int8)
+    mask[row_ind[0]] = col_ind
+
+    return mask
+
+def segment_image_mrf(full_img : np.array, object_boxes : {int : [int]}):
+    obj_masks = {}
+    for object_id, bbox in object_boxes.items():
+        subimg = full_img[bbox[0] : bbox[0] + bbox[2], bbox[1] : bbox[1] + bbox[3]].copy()
+        mask = segment_subimg_mrf(subimg)
+
+        obj_masks[object_id] = np.zeros((full_img.shape[0], full_img.shape[1]))
+        obj_masks[object_id][bbox[0] : bbox[0] + bbox[2], bbox[1] : bbox[1] + bbox[3]] = mask
+
+    return obj_masks
+
+# def get_knn_reference(mask : np.array, img_lab : np.array) -> np.array:
+#     assert len(mask.unique()) == 2
+#
+#     reference_image = img_lab[mask].mean(axis=(0,1))
+#
+#     return reference_image
+
+def get_knn_references(masks : {int : np.array}, full_img : np.array) -> {int : np.array}:
+    assert full_img.shape[2] == 3
+    mask_references = {}
+    img_lab = rgb2lab(full_img)
+    for object_id, object_mask in masks.items():
+        mask_references[object_id] = img_lab[object_mask].mean(axis=(0))
+        assert mask_references[object_id].shape[0] == 3, f'Shape of mean is incorrect: {mask_references[object_id].shape}'
+
+    return mask_references
+
+def get_midbox_references(bboxes : {int : (int,)}, full_img : np.array, box_radius=5) -> {int : np.array}:
+    assert full_img.shape[2] == 3
+    box_references = {}
+    igm_lab = rgb2lab(full_img)
+    for object_id, bbox in bboxes.items():
+        if (bbox[2] - bbox[0] < 10) or (bbox[3] - bbox[1] < 10):
+            print(f'bbox too small: {full_img}')
+            continue
+
+        # midbox as reference
+        midx, midy = (bbox[0] + bbox[2]) // 2, (bbox[1] + bbox[3]) // 2
+        midbox = full_img[midx-box_radius : midx+box_radius, midy-box_radius : midy+box_radius]
+
+        box_references[object_id] = midbox.mean(axis=0)
+        assert box_references[object_id].shape[0] == 3, f'Shape of mean is incorrect: {box_references[object_id].shape}'
+
+    return box_references
+
+def segment_subimg_knn(subimg, bg_ref, object_ref, norm=1) -> np.array:
+    '''segments a bounding box with a given subimg and a background reference'''
+    bg_dists = (subimg - bg_ref) ** 2 / norm
+    ref_dists = (subimg - object_ref) ** 2 / norm
+
+    return ref_dists.sum(axis=-1) > bg_dists.sum(axis=-1)
+
+def segment_image_knn(full_img: np.array, object_boxes: {int: [int]}, object_references: {int : np.array}, max_box_radius=5):
+    '''for every box mapped as object_id : [bbox (XYWH)], return the cluster
+    full_img should be H x W x 3'''
+    assert full_img.shape[2] == 3
+
+    img_lab = rgb2lab(full_img)
+    image_normalization = img_lab.max(axis=(0, 1))
+
+    # assume the edges of the image are the background and use as reference
+    # TODO: make the background the actual background
+
+    background_mask = np.zeros_like(img_lab, dtype=bool)
+    background_mask[:5] = 1
+    background_mask[-5:] = 1
+    background_mask[:, -5:] = 1
+    background_mask[:, :5] = 1
+
+    ref_bg = img_lab[background_mask].reshape(-1, 3).mean(axis=0)
+
+    obj_masks = {}
+
+    for object_id, bbox in object_boxes.items():
+        if bbox[2] < max_box_radius or bbox[3] < max_box_radius:
+            continue
+
+        # bounding box to segment
+        subimg_lab = img_lab[bbox[0]: bbox[0] + bbox[2], bbox[1]: bbox[1] + bbox[3]]
+        mask = segment_subimg_knn(subimg_lab, ref_bg, object_references[object_id], image_normalization)
+
+        obj_masks[object_id] = np.zeros((full_img.shape[0], full_img.shape[1]))
+        obj_masks[object_id][bbox[0]: bbox[0] + bbox[2], bbox[1]: bbox[1] + bbox[3]] = mask
+
+    return obj_masks
+
+def round_tracker_outputs(objects):
+    return {k : v.astype(int) for k, v in objects.items()}

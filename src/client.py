@@ -9,7 +9,7 @@ from params import PARAMS, CURR_DATE, DESIRED_CLASSES
 from Logger import ConsoleLogger, DictionaryStatsLogger
 from utils2 import *
 from data import Dataset
-from tracker import Tracker, BoxTracker, MaskTracker, BoxMaskTracker
+from tracker import Tracker, BoxTracker, MaskTracker, BoxMaskTracker, segment_image_mrf
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
@@ -40,14 +40,7 @@ def get_gt_detections_as_pred(class_info : ((int,), (int,)), boxes : [[int,],]) 
     returns as {object_id : box}'''
     # TODO: move reformatting into dataset
     assert len(class_info[0]) == len(boxes), f'class_info: {class_info} boxes: {boxes}'
-    gt_boxes = {}
-    for i in range(len(class_info[0])):
-        if class_info[0][i] not in DESIRED_CLASSES:
-            continue
-
-        gt_boxes[class_info[1][i]] = boxes[i]
-
-    return gt_boxes
+    return {object_id : bbox for class_id, object_id, bbox in zip(*class_info, boxes) if class_id in DESIRED_CLASSES}
 
 def get_gt_masks(class_info : ((int,), (int,)), gt_mask) -> {int : {int : np.array}}:
     '''reformats annotations into eval-friendly format
@@ -71,13 +64,51 @@ def get_gt_masks(class_info : ((int,), (int,)), gt_mask) -> {int : {int : np.arr
     return gt_masks
 
 def get_gt_masks_as_pred(class_info : ((int,), (int,)), gt_mask : np.array) -> np.array:
-    '''returns the given gt_mask as a 1 x 21 x W x H array'''
-    x = np.zeros((1, 21, gt_mask.shape[0], gt_mask.shape[1]))
+    '''returns the given gt_mask as a {obj_id : np.array (W x H)}'''
+    # x = np.zeros((1, 21, gt_mask.shape[0], gt_mask.shape[1]))
+    d = {}
 
     for class_id, obj_id in zip(class_info[0], class_info[1]):
-        x[0, class_id, :, :][gt_mask == obj_id] = 1
+        d[obj_id] = gt_mask == obj_id
+        # x[0, class_id, :, :][gt_mask == obj_id] = 1
 
-    return x
+    return d
+
+def get_gt_dets_from_mask(class_info : ((int,), (int,)), gt_mask : np.array) -> {int : {int : np.array}}:
+    '''returns mask as {class : {object : bbox}}
+    used for BBSM run when annotations are in mask format'''
+    mask_maps = separate_segmentation_mask(gt_mask)
+
+    assert len(class_info[1]) == len(mask_maps.keys()), f'keys are {class_info[1]} vs. {mask_maps.keys()}'
+
+    gt_masks = {}
+
+    for i in range(len(class_info[0])):
+        curr_class = class_info[0][i]
+        curr_obj = class_info[1][i]
+
+        if curr_class not in gt_masks:
+            gt_masks[curr_class] = {curr_obj : get_bbox_from_mask(mask_maps[curr_obj])}
+        else:
+            gt_masks[curr_class][curr_obj] = get_bbox_from_mask(mask_maps[curr_obj])
+
+    return gt_masks
+
+def get_gt_dets_from_mask_as_pred(class_info : ((int,), (int,)), gt_mask : np.array) -> {int : (int,)}:
+    '''reformats the annotations into tracker-prediction format
+    class_info is (class_ids, object_ids)
+    returns as {object_id : box}'''
+    mask_maps = separate_segmentation_mask(gt_mask)
+
+    assert len(class_info[1]) == len(mask_maps.keys()), f'keys are {class_info[1]} vs. {mask_maps.keys()}'
+    gt_boxes = {}
+    for i in range(len(class_info[0])):
+        if class_info[0][i] not in DESIRED_CLASSES:
+            continue
+
+        gt_boxes[class_info[1][i]] = mask_maps[class_info[1][i]]
+
+    return gt_boxes
 
 class Client:
     def _init_tracker(self):
@@ -87,7 +118,9 @@ class Client:
                 self.tracker = BoxTracker(self.logger)
             elif self.run_type == 'SM':
                 # self.tracker = MaskTracker(self.logger)
-                self.tracker = BoxMaskTracker(self.logger)
+                self.tracker = MaskTracker(self.logger)
+            elif self.run_type == 'BBSM':
+                self.tracker = BoxTracker(self.logger)
             else:
                 raise NotImplementedError
 
@@ -167,26 +200,17 @@ class Client:
             self.old_timestep = -1  # timestep tracker for other processes
             self.old_start_counter = -1  # counter to track the current video
             self.tracker.init_multiprocessing()
-            self.old_class_map_detection = None
-
-            if self.is_detection():
-                # initialize shared detection objects needed for logging/eval
-                self.parallel_thread = None
-            elif self.is_segmentation():
-                self.parallel_segmentor = None
-            else:
-                raise NotImplementedError('No other parallel runs.')
 
     def __init__(self, server_connect = PARAMS['USE_NETWORK'], run_type = PARAMS['RUN_TYPE'],
                  stats_log_dir = PARAMS['STATS_LOG_DIR'], dataset = PARAMS['DATASET'], tracking = PARAMS['TRACKING'],
                  task = PARAMS['TASK'], compressor = PARAMS['COMPRESSOR'],
                  refresh_type = PARAMS['BOX_REFRESH'], run_eval = PARAMS['EVAL'],
                  model_name = PARAMS['MODEL_NAME'], server_device = PARAMS['SERVER_DEVICE'],
-                 compressor_device = PARAMS['COMPRESSOR_DEVICE'], socket_buffer_size = PARAMS['SOCK_BUFFER_SIZE'],
+                 compressor_device = PARAMS['COMPRESSOR_DEVICE'], socket_buffer_read_size = PARAMS['SOCK_BUFFER_READ_SIZE'],
                  tracking_box_limit = PARAMS['BOX_LIMIT'], parallel_run = PARAMS['SMARTDET'],
                  detection_postprocessor : Callable = default_detection_postprocessor, log_stats = PARAMS['LOG_STATS']):
 
-        self.socket, self.message, self.socket_buffer_size = None, None, socket_buffer_size
+        self.socket, self.message, self.socket_buffer_read_size = None, None, socket_buffer_read_size
         self.logger, self.dataset = ConsoleLogger(), Dataset(dataset=dataset)
         self.stats_logger = DictionaryStatsLogger(logfile=f"{stats_log_dir}/client-{run_type}-{dataset}-{CURR_DATE}.log", log_stats=log_stats)
         self.server_connect, self.tracking, self.task, self.run_type = server_connect, tracking, task, run_type
@@ -196,7 +220,7 @@ class Client:
         self.server_device, self.compressor_device = server_device, compressor_device
         self.parallel_run = parallel_run
 
-        self.class_map_detection = {}
+        self.object_gt_mapping = {}
 
         self._init_tracker()
         self._init_models()
@@ -216,6 +240,11 @@ class Client:
             self.get_gt_as_pred = get_gt_masks_as_pred
             self.get_pred = self.get_segmentation_mask
 
+        elif self.run_type == 'BBSM':
+            self.get_gt = get_gt_dets_from_mask
+            self.get_gt_as_pred = get_gt_dets_from_mask_as_pred
+            self.get_pred = self.get_detections
+
         else:
             raise NotImplementedError
 
@@ -233,7 +262,7 @@ class Client:
         self.logger.log_debug('Connecting from client')
         self.socket = socket(AF_INET, SOCK_STREAM)
         self.socket.connect((server_ip, server_port))
-        self.socket.setsockopt(SOL_SOCKET, SO_SNDBUF, self.socket_buffer_size)
+        self.socket.setsockopt(SOL_SOCKET, SO_SNDBUF, 10000)
         self.logger.log_info('Successfully connected to socket')
 
     def _client_handshake(self):
@@ -285,7 +314,7 @@ class Client:
             while len(data) < length:
                 to_read = length - len(data)
                 data += self.socket.recv(
-                    4096 if to_read > 4096 else to_read)
+                    self.socket_buffer_read_size if to_read > self.socket_buffer_read_size else to_read)
 
             # send our 0 ack
             self.socket.sendall(b'\00')
@@ -332,7 +361,7 @@ class Client:
             return detections
         elif self.is_segmentation():
             # server data is in the shape of 1 x 21 x W x H
-            return server_data['out'].detach().numpy()
+            return server_data['out'].detach().numpy()[0]
         else:
             raise NotImplementedError('No other server task other than detection.')
 
@@ -344,7 +373,7 @@ class Client:
         data, size_orig, class_info, gt, fname, _ = d
 
         if self.compressor == 'model':  # use a model (bottleneck) to compress it
-            self.logger.log_debug('Performing compression using mdoel.')
+            self.logger.log_debug('Performing compression using model.')
             data_reshape = (data / 256).transpose((2, 0, 1))[np.newaxis, ...]
 
             # collect model runtime
@@ -389,7 +418,7 @@ class Client:
         returns in the format of {object_id : (xyxy)}'''
 
         data, size_orig, class_info, gt, fname, _ = d
-        gt_for_eval = self.get_gt_as_pred(class_info, gt)
+        gt_as_pred = self.get_gt_as_pred(class_info, gt)
 
         # if gt is used, function will simply return the ground truth;
         if self.is_gt():
@@ -398,7 +427,7 @@ class Client:
             _, size_orig, class_info, gt, _, _ = d
 
             self.stats_logger.push_log({'gt' : True, 'original_size' : size_orig})
-            return gt_for_eval
+            return gt_as_pred
 
         # otherwise, use an actual detector
         self._compress_and_send_data(d)
@@ -408,7 +437,7 @@ class Client:
         now = time.time()
         server_data = self._get_model_data() # batch size 1
         if server_data is None:
-            server_data = gt_for_eval
+            server_data = gt_as_pred
 
         self.stats_logger.push_log({'response_time': time.time() - now}, append=False)
         self.logger.log_info(f'Received information with response time {time.time() - now}')
@@ -445,21 +474,21 @@ class Client:
         return None
 
     def _reformat_detections_for_eval(self, gt_detections_with_classes, detections_with_classes):
-        '''filters the detections by the ground truth detections and logs discrepancies'''
+        '''filters the detections by the ground truth detections and logs discrepancies
+        returns detections, object mapping (model_id : gt_id)'''
         # maps the ground truth labels with the predicted output (for evaluation purposes)
-        class_map_detection, extra_detections = map_bbox_ids(detections_with_classes, gt_detections_with_classes)
+        object_id_mapping, extra_detections = map_bbox_ids(detections_with_classes, gt_detections_with_classes)
         self.stats_logger.push_log({f'extra_class_{class_id}': extra_detection
                                     for class_id, extra_detection in extra_detections.items()},
                                    append=False)
 
         # remove the unnecessary boxes (don't bother tracking them)
-        add_clause = lambda object_id: object_id in class_map_detection
-        detections, _ = remove_classes_from_detections(detections_with_classes, add_clause=add_clause)
+        add_clause = lambda object_id: object_id in object_id_mapping
+        detections, _ = remove_classes_from_pred(detections_with_classes, add_clause=add_clause)
 
-        self.logger.log_debug(f'Detections made: {len(detections)}, '
-                              f'with mapping {class_map_detection}.')
+        self.logger.log_debug(f'Detections made: {len(detections)}, with mapping {object_id_mapping}.')
 
-        return detections, class_map_detection
+        return detections, object_id_mapping
 
     def get_detections(self, data, class_info, gt, d, now, start=False) -> ({int : [int]}, {int : int}):
         '''large function that gets the detections in the format of
@@ -471,27 +500,37 @@ class Client:
 
         if self.run_eval:
             self.logger.log_debug('Reformatting raw detections.')
-            detections, class_map_detection = self._reformat_detections_for_eval(gt_detections_with_classes,
+            detections, object_id_mapping = self._reformat_detections_for_eval(gt_detections_with_classes,
                                                                                  detections_with_classes)
 
         else:
             self.logger.log_debug('Reformatting and limiting raw detections (eval false).')
             return_clause = lambda _d: len(_d) > self.tracking_box_limit
-            detections, class_map_detection = remove_classes_from_detections(detections_with_classes,
-                                                                             return_clause=return_clause)
+            detections, object_id_mapping = remove_classes_from_pred(detections_with_classes,
+                                                                     return_clause=return_clause)
 
-        return detections, class_map_detection
+        return detections, object_id_mapping
 
-    def _reformat_masks_for_eval(self, gt_masks : {int : {int : np.array}}, masks : np.array) -> {int : np.array}:
-        # TODO: use object_id instead of class_id
-        '''filters the mask (1 x 21 x H x W) np array into a format of
-        class_id : np.array mask'''
-        self.logger.log_debug('Reformatting masks from straight array to dict')
-        mask_classes = {}
-        for class_id in gt_masks.keys():
-            mask_classes[class_id] = masks[0, class_id, :, :]
+    def _reformat_masks_for_eval(self, gt_masks_with_classes : {int : {int : np.array}},
+                                 pred_masks_with_classes : np.array) -> ({int : np.array}, {int : int}):
+        '''filters the masks by the ground truth detections and logs discrepancies
+                returns detections, object mapping (model_id : gt_id)'''
+        # make the 21 x H x W mask into a dictionary and also binarized
+        binarized_pred_masks = binarize_mask(pred_masks_with_classes)
+        pred_masks_with_classes = {i : binarized_pred_masks[i] for i in range(binarized_pred_masks.shape[0])}
+        # maps the ground truth labels with the predicted output (for evaluation purposes)
+        object_id_mapping, extra_masks = map_mask_ids(pred_masks_with_classes, gt_masks_with_classes)
+        self.stats_logger.push_log({f'extra_class_{class_id}': extra_detection
+                                    for class_id, extra_detection in extra_masks.items()},
+                                   append=False)
 
-        return mask_classes
+        # remove the unnecessary boxes (don't bother tracking them)
+        add_clause = lambda object_id: object_id in object_id_mapping
+        reformatted_masks, _ = remove_classes_from_pred(pred_masks_with_classes, add_clause=add_clause)
+
+        self.logger.log_debug(f'Detections made: {len(reformatted_masks)}, with mapping {object_id_mapping}.')
+
+        return reformatted_masks, object_id_mapping
 
     def get_segmentation_mask(self, data, class_info, gt, d, now, start=False) -> ({int: np.array}, {int : int}):
         '''gets the segmentation mask as a class_id : np array'''''
@@ -502,18 +541,12 @@ class Client:
 
         # if self.run_eval:
         self.logger.log_debug('Reformatting raw masks.')
-        reformatted_masks = self._reformat_masks_for_eval(gt_masks, masks)
+        reformatted_masks, object_id_mapping = self._reformat_masks_for_eval(gt_masks, masks)
         #
         # else:
         #     self.logger.log_debug('Limiting raw detections')
 
-        class_map_detection = {}
-
-        for k1, v1 in gt_masks.items():
-            for k2 in v1.keys():
-                class_map_detection[k2] = k1
-
-        return reformatted_masks, class_map_detection
+        return reformatted_masks, object_id_mapping
 
     def _execute_catchup(self, old_timestep : int, old_detections) -> (BoxTracker, {}):
         '''executes catchup on the tracker'''
@@ -530,21 +563,26 @@ class Client:
     def handle_thread_result(self):
         '''information received from server; perform action with outdated information'''
         if self.is_detection(): # launch catchup algorithm
-            old_detections, self.old_class_map_detection = self.parallel_thread.result()
+            old_detections, self.old_object_gt_mapping = self.parallel_thread.result()
             self.stats_logger.push_log({'num_detections': len(old_detections), 'tracker': False})
             self.logger.log_info('Parallel detections received; launching catchup')
             self.parallel_thread = self.parallel_executor.submit(self._execute_catchup, self.old_timestep,
                                                                  old_detections)
         elif self.is_segmentation():
-            pass
+            old_detections, self.old_object_gt_mapping = self.parallel_thread.result()
+            self.stats_logger.push_log({'num_masks': len(old_detections), 'tracker': False})
+            self.logger.log_info('Parallel detections received; launching catchup')
+            self.parallel_thread = self.parallel_executor.submit(self._execute_catchup, self.old_timestep,
+                                                                 old_detections)
+
 
     def handle_catchup_result(self):
         '''catchup completed; resync variables'''
         self.logger.log_info('Re-syncing self.tracker, handling catchup result.')
-        self.class_map_detection = self.old_class_map_detection
+        self.object_gt_mapping = self.old_object_gt_mapping
         logs = self.parallel_thread.result()
         self.tracker.reset_mp()
-        self.old_class_map_detection = None
+        self.old_object_gt_mapping = None
         self.stats_logger.push_log(logs)
         self.stats_logger.push_log({'reset_tracker': True, 'reset_i': self.old_timestep, })
 
@@ -553,6 +591,8 @@ class Client:
         if self.parallel_run:
             if not self.is_gt():
                 if self.parallel_thread is not None: # if it's none, it's been completed
+                    self.tracker.waiting_step(data)
+
                     if self.parallel_thread.done():
                         if self.parallel_state == 1: # got bounding boxes for timestep i, time to execute catch-up
                             self.logger.log_info('Exiting state 1; going to state 2.')
@@ -571,6 +611,9 @@ class Client:
                             self.logger.log_debug('Successfully received catchup information.')
                             self.parallel_state = 0
                             self.parallel_thread = None
+                            self.tracker.reset_mp()
+
+                            return
 
                     elif self.parallel_thread.running():
                         # do nothing if it is still running
@@ -578,24 +621,33 @@ class Client:
                     else:
                         raise NotImplementedError('No other status exists.')
 
-                self.tracker.waiting_step(data)
-
         return None
 
-    def eval_detections(self, gt_detections, pred_detections, class_map_detection):
+    def close_mp(self):
+        if self.parallel_run:
+            if self.parallel_state == 0: # idle
+                return
+            else:
+                assert self.parallel_thread is not None
+                self.parallel_thread.cancel()
+
+        return
+
+    def eval_detections(self, gt_detections, pred_detections, object_id_mapping):
         '''evaluates detections and pushes the logs'''
         self.logger.log_info('Evaluating detections.')
-        pred_scores, missing_preds = eval_detections(gt_detections, pred_detections, class_map_detection)
+        pred_scores, missing_preds = eval_detections(gt_detections, pred_detections, object_id_mapping)
         self.stats_logger.push_log({'missing_preds' : missing_preds, **pred_scores}, append=False)
         return
 
-    def eval_segmentation(self, gt_mask, pred_mask, *kargs):
+    def eval_segmentation(self, gt_mask, pred_mask, object_id_mapping):
         # TODO: function
         self.logger.log_info('Evaluating segmentation.')
-        pred_scores, missing_preds = eval_segmentation(gt_mask, pred_mask)
+        pred_scores, missing_preds = eval_segmentation(gt_mask, pred_mask, object_id_mapping)
         self.stats_logger.push_log({'missing_preds' : missing_preds, **pred_scores}, append=False)
 
     def _reset_state_on_launch(self, data):
+        '''state update for post-function of launching parallel detection'''
         self.parallel_state = 1
         self.old_timestep = self.k
         self.old_start_counter = self.start_counter
@@ -620,16 +672,17 @@ class Client:
                 # TODO: wrap into function for easier external testing
                 self.logger.log_info(f'Starting iteration {i}')
 
-                assert self.run_type in ('BB', 'SM'), 'No other type of run'
+                assert self.run_type in ('BB', 'SM', 'BBSM'), 'No other type of run'
 
                 data, size_orig, class_info, gt, fname, start = d
                 self.stats_logger.push_log({'iter' : i, 'fname' : fname})
 
                 # get the gt detections in {object : info} for eval
-                gt_preds = self.get_gt(class_info, gt)
+                gt_preds = self.get_gt(class_info, gt) # class : {object : info}
+                gt_as_pred = self.get_gt_as_pred(class_info, gt) # {object : info}
                 if self.run_type == 'BB':
-                    self.logger.log_debug(f'num gt_detections : {len(gt_preds)}')
-                elif self.run_type == 'SM':
+                    self.logger.log_debug(f'num gt_detections : {len(gt_as_pred)}')
+                elif self.run_type == 'SM' or self.run_type == 'BBSM':
                     self.logger.log_debug(f'Got gt mask; type {type(gt_preds)}')
 
                 # first check if the parallel detection process has completed
@@ -641,9 +694,9 @@ class Client:
                     self.start_counter += 1
                     self.logger.log_info('Start of loop; initializing bounding box labels.')
 
-                    pred, self.class_map_detection = self.get_pred(data, class_info, gt, d,
-                                                                   end_of_previous_iteration,
-                                                                   start=True)
+                    pred, self.object_gt_mapping = self.get_pred(data, class_info, gt, d,
+                                                                 end_of_previous_iteration,
+                                                                 start=True)
                     self.stats_logger.push_log({'num_preds' : len(pred)})
                     self._reinit_tracker(data, pred)
 
@@ -661,9 +714,9 @@ class Client:
                         pred = self.get_tracker_pred_from_frame(data)
 
                     else: # detections in thread
-                        pred, self.class_map_detection = self.get_pred(data, class_info, gt, d,
-                                                                       end_of_previous_iteration,
-                                                                       start=True)
+                        pred, self.object_gt_mapping = self.get_pred(data, class_info, gt, d,
+                                                                     end_of_previous_iteration,
+                                                                     start=True)
                         self.stats_logger.push_log({'num_preds': len(pred)})
                         self._reinit_tracker(data, pred)
 
@@ -676,7 +729,7 @@ class Client:
                     pred = self.get_tracker_pred_from_frame(data)
 
                 if pred is None:
-                    pred = gt_preds
+                    pred = gt_as_pred
 
                 self.stats_logger.push_log({'iter_k': self.k})
 
@@ -684,9 +737,14 @@ class Client:
 
                 if self.run_eval:
                     if self.run_type == 'BB':
-                        self.eval_detections(gt_preds, pred, self.class_map_detection)
+                        self.eval_detections(gt_as_pred, pred, self.object_gt_mapping)
                     elif self.run_type == 'SM':
-                        self.eval_segmentation(gt_preds, pred)
+                        self.eval_segmentation(gt_as_pred, pred, self.object_gt_mapping)
+                    elif self.run_type == 'BBSM': # pred is still in "bb" mode
+                        self.logger.log_debug('Eval detections and pred')
+                        self.eval_detections(gt_as_pred, pred, self.object_gt_mapping)
+                        gt_masks = get_gt_masks(class_info, gt)
+                        self.eval_segmentation(gt_masks, segment_image_mrf(data, pred), self.object_gt_mapping)
 
                 # push log
                 self.stats_logger.push_log({}, append=True)
@@ -694,44 +752,52 @@ class Client:
                 # TODO: make postprocessing more flexible
                 if self.run_type == 'BB':
                     self.detection_postprocess({'detections' : pred, 'gt_detections' : gt, 'frame' : data,
-                                                'iteration' : self.k-1, 'mapping' : self.class_map_detection})
+                                                'iteration' : self.k-1, 'mapping' : self.object_gt_mapping})
                 end_of_previous_iteration = time.time()
 
         except Exception as ex:
             traceback.print_exc()
             self.logger.log_error(str(ex))
-
-        finally:
-            self.logger.log_info("Client loop ended.")
             self.close()
 
-    def start_loop2(self):
+        finally:
+            # check if any processes still remain in the parallel
+            self.close_mp()
+            self.logger.log_info("Client loop ended.")
+
+    def start_loop2(self, file_batch_size = PARAMS['FILE_BATCH_SIZE']):
         if not PARAMS['FILE_TRANSFER']:
             self.start_loop()
             return
 
         # transfer files back and forth
-        all_server_fnames = pickle.load(PARAMS['DATA_PICKLE_FILES'])
+        with open(PARAMS['DATA_PICKLE_FILES'], 'rb') as f:
+            all_server_fnames = pickle.load(f)
 
         start_i = 0
-        data_dir = PARAMS['FILE_LANDING_DIR']
+        data_dir = PARAMS['DATA_DIR']
 
         for fname_batch in all_server_fnames:
             self._send_encoded_data(fname_batch)
+            self.logger.log_info(f'Sent first batch with {len(fname_batch)} files')
             byte_files = self._get_server_data()
+            self.logger.log_info('Received batch of files; processing')
 
             assert len(fname_batch) == len(byte_files)
 
             for fname, byte_file in zip(fname_batch, byte_files):
-                self.logger.log_info(f'Starting with fname {fname}')
+                self.logger.log_debug(f'Starting with fname {fname}')
+                # os.makedirs(f'{data_dir}/{fname}', exist_ok=True)
                 with open(f'{data_dir}/{fname}', 'wb') as f:
                     f.write(byte_file)
 
+            self.logger.log_debug('Files received and written; starting loop')
             self.start_loop(start_i = start_i)
             # batch fname size fixed at 5
-            start_i += 5
+            start_i += file_batch_size
 
             # remove the files
+            self.logger.log_debug('Removing files')
             for fname in fname_batch:
                 os.remove(f'{data_dir}/{fname}')
 
@@ -755,3 +821,4 @@ if __name__ == '__main__':
 
     cp.start_client(PARAMS['HOST'], PARAMS['PORT'])
     cp.start_loop2()
+    cp.close()

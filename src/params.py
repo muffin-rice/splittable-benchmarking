@@ -13,7 +13,7 @@ PARAMS = {}
 PARAMS['USE_NETWORK'] = False
 PARAMS['HOST'] = '128.195.54.126' # localhost is '127.0.0.1', network host to use is '128.195.54.126'
 PARAMS['PORT'] = 1234
-PARAMS['SOCK_BUFFER_SIZE'] = 16384
+PARAMS['SOCK_BUFFER_READ_SIZE'] = 16384
 
 # params for directories + misc things
 PARAMS['STATS_LOG_DIR'] = 'logs'
@@ -33,6 +33,7 @@ PARAMS['VIDEO_SHAPE'] = (1280,720)
 PARAMS['DAVIS_SCENES'] = [1,2,3,4,5,6,7,8,9,10]
 
 # params for model yamls and paths
+PARAMS['ENTROPIC_DIR'] = 'Models/entropic'
 PARAMS['FASTER_RCNN_YAML'] = 'configs/coco2017/supervised_compression/entropic_student/faster_rcnn_splittable_resnet50-fp-beta0.08_fpn_from_faster_rcnn_resnet50_fpn.yaml'
 PARAMS['DEEPLABV3_YAML'] = 'configs/pascal_voc2012/supervised_compression/entropic_student/deeplabv3_splittable_resnet50-fp-beta0.16_from_deeplabv3_resnet50.yaml'
 # note: unusable due to lack of JIT
@@ -40,7 +41,7 @@ PARAMS['CLIENT_MODEL_PATH'] = 'Models/Split/model_2_client.pt'
 PARAMS['SERVER_MODEL_PATH'] = 'Models/Split/model_2_client.pt'
 
 # params for run type
-PARAMS['RUN_TYPE'] = 'BB' # 'bounding box' vs 'segmentation mask'
+PARAMS['RUN_TYPE'] = 'BB' # 'bounding box' (BB) vs 'segmentation mask' (SM) vs segmask after bb 'BBSM'
 PARAMS['EVAL'] = True
 PARAMS['BOX_LIMIT'] = 10 # max number of boxes to track, only applicable if EVAL is false
 
@@ -48,6 +49,7 @@ PARAMS['BOX_LIMIT'] = 10 # max number of boxes to track, only applicable if EVAL
 PARAMS['TRACKING'] = True # execute + evaluate a tracking algorithm; if false, evaluates the detector
 PARAMS['TRACKER'] = 'MEDIANFLOW' # tracker algorithm
 PARAMS['BBOX_SEG'] = None
+PARAMS['CATCHUP_LIMIT'] = 15
 
 # params for the object detection / segmentation
 PARAMS['TASK'] = 'det' # det, seg, gt; gt means no predictions will happen
@@ -68,7 +70,7 @@ PARAMS['REFRESH_ITERS'] = 10 # for fixed method, how many fixed iterations to re
 # params for when client requests files from the server
 PARAMS['FILE_TRANSFER'] = False
 PARAMS['DATA_PICKLE_FILES'] = None # pickle of a list of batches of fnames (ie fnames in the format of 'VIRAT/videos/...')
-PARAMS['FILE_LANDING_DIR'] = ''
+PARAMS['FILE_BATCH_SIZE'] = 5
 
 try:
   from param_overrides import PARAM_OVERRIDES
@@ -240,6 +242,7 @@ PASCAL_COCO_MAP = {
 }
 
 # TODO: implement the rest of the classes
+# len is the num of objects, index is the obj class in pascal
 DAVIS_PASCAL_MAP = {
  'bear': (0,12,), # bear is most similar to dog class
  'bike-packing': (0,2,15),
@@ -249,4 +252,8 @@ DAVIS_PASCAL_MAP = {
  'boat': (0,4,),
  'boxing-fisheye': (0,15,),
  'breakdance': (0,15,),
+}
+
+ILSVRC_COCO_MAP = {
+
 }

@@ -54,10 +54,10 @@ class Server:
 
     def __init__(self, server_connect = PARAMS['USE_NETWORK'], compressor = PARAMS['COMPRESSOR'],
                  model_name = PARAMS['MODEL_NAME'], server_device = PARAMS['SERVER_DEVICE'],
-                 socket_buffer_size = PARAMS['SOCK_BUFFER_SIZE'], log_stats = PARAMS['LOG_STATS'],
+                 socket_buffer_read_size = PARAMS['SOCK_BUFFER_READ_SIZE'], log_stats = PARAMS['LOG_STATS'],
                  task = PARAMS['TASK'], stats_log_dir = PARAMS['STATS_LOG_DIR'], run_type = PARAMS['RUN_TYPE'],
                  dataset = PARAMS['DATASET']):
-        self.socket, self.connection, self.server_connect, self.socket_buffer_size = None, None, server_connect, socket_buffer_size
+        self.socket, self.connection, self.server_connect, self.socket_buffer_read_size = None, None, server_connect, socket_buffer_read_size
         self.data, self.logger = None, ConsoleLogger()
         self.stats_logger = DictionaryStatsLogger(logfile=f"{stats_log_dir}/server-{run_type}-{dataset}-{CURR_DATE}.log", log_stats=log_stats)
         self.task = task
@@ -72,7 +72,7 @@ class Server:
 
     def listen(self, server_ip, server_port):
         self.socket = socket(AF_INET, SOCK_STREAM)
-        self.socket.setsockopt(SOL_SOCKET, SO_SNDBUF, self.socket_buffer_size)
+        self.socket.setsockopt(SOL_SOCKET, SO_SNDBUF, 10000)
         self.logger.log_info(f"Binding to {server_ip}:{server_port}")
         self.socket.bind((server_ip, server_port))
         self.socket.listen(1)
@@ -106,7 +106,7 @@ class Server:
             while len(data) < length:
                 to_read = length - len(data)
                 data += self.connection.recv(
-                    4096 if to_read > 4096 else to_read)
+                    self.socket_buffer_read_size if to_read > self.socket_buffer_read_size else to_read)
 
             # send our 0 ack
             self.connection.sendall(b'\00')
@@ -158,43 +158,46 @@ class Server:
             # effectively time waiting for client
             time_since_processed_lass_message = time.time()
             while True:
-                if PARAMS['FILE_TRANSFER']:
+                client_data = self.get_client_data()
+                if PARAMS['FILE_TRANSFER'] and 'list' in str(type(client_data)):
                     # send data over
-                    fnames = self.get_client_data()
-                    # data should be in the format of a list of fnames
+                    self.logger.log_info(f'Received fname list of {len(client_data)} files')
                     byte_files = []
-                    for fname in fnames:
+                    for fname in client_data:
                         with open(f'{PARAMS["DATA_DIR"]}/{fname}', 'rb') as f:
                             byte_files.append(f.read())
-                    self.send_response(fnames)
 
-                data = self.parse_message(self.get_client_data()) # data  .shape
-                self.logger.log_debug(f'Finished getting client data.')
+                    self.logger.log_debug(f'Sent response of byte files: size {sum(sys.getsizeof(x) for x in byte_files)}')
+                    self.send_response(byte_files)
 
-                curr_time = time.time()
-                self.stats_logger.push_log({'client_time' : curr_time - time_since_processed_lass_message})
-                response = self.process_data(data)
-                process_time = round(time.time() - curr_time, 4)
+                else:
+                    data = self.parse_message(client_data) # data  .shape
+                    self.logger.log_debug(f'Finished getting client data.')
 
-                response_size = get_tensor_size(response)
+                    curr_time = time.time()
+                    self.stats_logger.push_log({'client_time' : curr_time - time_since_processed_lass_message})
+                    response = self.process_data(data)
+                    process_time = round(time.time() - curr_time, 4)
 
-                self.logger.log_info(f'Sending response of size {response_size}.')
+                    response_size = get_tensor_size(response)
 
-                self.send_response(response)
+                    self.logger.log_info(f'Sending response of size {response_size}.')
 
-                self.stats_logger.push_log({'processing_time' : process_time, 'iteration' : iteration_num,
-                                            'response_size' : response_size}, append=True)
-                iteration_num += 1
+                    self.send_response(response)
+
+                    self.stats_logger.push_log({'processing_time' : process_time, 'iteration' : iteration_num,
+                                                'response_size' : response_size}, append=True)
+                    iteration_num += 1
 
                 time_since_processed_lass_message = time.time()
 
         except Exception as ex:
             traceback.print_exc()
             self.logger.log_error(ex)
+            self.close()
 
         finally:
             self.logger.log_info('Server Loop Ended')
-            self.close()
 
     def send_response(self, data):
         data = pickle.dumps(data)
@@ -221,3 +224,4 @@ if __name__ == '__main__':
 
     server.start(PARAMS['HOST'], PARAMS['PORT'])
     server.start_server_loop()
+    server.close()

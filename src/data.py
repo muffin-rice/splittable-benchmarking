@@ -12,30 +12,30 @@ class Dataset:
         self.logger = ConsoleLogger()
         self.simulated_fps = fps
         if dataset == 'latency':
-            self.dataset = self.get_toy_dataloader()
+            self.dataset = self.get_toy_dataloader
         elif dataset == 'framelen':
-            self.dataset = self.get_framelen_dataset()
-        elif dataset == 'bdd':
-            self.dataset = self.get_bdd_dataset()
+            self.dataset = self.get_framelen_dataset
+        # elif dataset == 'bdd':
+        #     self.dataset = self.get_bdd_dataset
         elif dataset == 'virat':
-            self.dataset = self.get_virat_dataset()
-        elif dataset == 'yc2':
-            self.dataset = self.get_youcook2_dataset()
+            self.dataset = self.get_virat_dataset
+        # elif dataset == 'yc2':
+        #     self.dataset = self.get_youcook2_dataset
         elif dataset == 'phone':
-            self.dataset = self.get_phone_dataset()
+            self.dataset = self.get_phone_dataset
         elif dataset == 'kitti_toy':
-            self.dataset = self.get_model_toy_dataset()
+            self.dataset = self.get_model_toy_dataset
         elif dataset == 'kitti':
-            self.dataset = self.get_kitti_dataset()
+            self.dataset = self.get_kitti_dataset
         elif dataset == 'davis':
-            self.dataset = self.get_davis_dataset()
+            self.dataset = self.get_davis_dataset
         else:
             raise NotImplementedError('No Dataset Found.')
 
     def get_dataset(self):
         '''in the video case, returns (byte_encoding, (frames_size, encoding_size), full_fname)
         for object detection, returns (image, orig_size, ((class, object_index),), (gt_boxes,), full_fname, new_video_bool)'''
-        return self.dataset
+        return self.dataset()
 
     def open_fname(self, fname, cap = None, codec = 'avc1', frame_limit = PARAMS['FRAME_LIMIT'], shape = PARAMS['VIDEO_SHAPE'],
                    transpose = False):
@@ -89,26 +89,26 @@ class Dataset:
 
                     yield byte_encoding, (frames_size, encoding_size), full_fname
 
-    def get_bdd_dataset(self):
-        fnames = [fname for fname in os.listdir(f'{self.data_dir}/bdd100k/videos/test') if '.mov' in fname] # remove .DS_Store and other misc files
-
-        num_success = 0
-        for fname in fnames:
-            full_fname = f'{self.data_dir}/bdd100k/videos/test/{fname}'
-            cap = cv2.VideoCapture(full_fname)
-
-            for i in range(5):
-                if num_success >= 700:  # 700 files x 5 iters/file = 7000 trials
-                    break
-
-                ret, byte_info = self.open_fname(full_fname, cap=cap)
-                if not ret:
-                    continue
-
-                byte_encoding, (frames_size, encoding_size) = byte_info
-                num_success+=1
-
-                yield byte_encoding, (frames_size, encoding_size), full_fname
+    # def get_bdd_dataset(self):
+    #     fnames = [fname for fname in os.listdir(f'{self.data_dir}/bdd100k/videos/test') if '.mov' in fname] # remove .DS_Store and other misc files
+    #
+    #     num_success = 0
+    #     for fname in fnames:
+    #         full_fname = f'{self.data_dir}/bdd100k/videos/test/{fname}'
+    #         cap = cv2.VideoCapture(full_fname)
+    #
+    #         for i in range(5):
+    #             if num_success >= 700:  # 700 files x 5 iters/file = 7000 trials
+    #                 break
+    #
+    #             ret, byte_info = self.open_fname(full_fname, cap=cap)
+    #             if not ret:
+    #                 continue
+    #
+    #             byte_encoding, (frames_size, encoding_size) = byte_info
+    #             num_success+=1
+    #
+    #             yield byte_encoding, (frames_size, encoding_size), full_fname
 
     def get_virat_dataset(self, col_names=VIRAT_COLS, class_mapping = VIRAT_COCO_MAP):
         videos_dir = f'{self.data_dir}/VIRAT/videos'
@@ -121,19 +121,16 @@ class Dataset:
         for fname in fnames:
             video_fname = f'{videos_dir}/{fname}'
             annotation_fname = f'{annotations_dir}/{fname[:-4]}.viratdata.objects.txt'  # fix type
-            cap = cv2.VideoCapture(video_fname)
-            # success, frames = extract_frames(cap, frame_limit=frame_limit, transpose_frame=transpose, vid_shape=shape)
-            # ret, byte_info = self.open_fname(video_fname)
             annotation_df = pd.read_csv(annotation_fname, delimiter=' ', header=None, names=col_names)
-            i = -1  # frame number
-            success, frame = cap.read()
+            cap = cv2.VideoCapture(video_fname)
+            success, frames = extract_frames(cap, vid_shape=None)
             time_since_previous_frame = time.time()
-            while success:
+            for i in range(frames.shape[0]):
+                frame = frames[i, ...]
                 while time.time() - time_since_previous_frame < time_per_frame:
                     time.sleep(0.005)
 
                 time_since_previous_frame = time.time()
-                i += 1
                 df_slice = annotation_df.loc[annotation_df['frame_num'] == i]
 
                 object_ids = list(df_slice['object_id'])
@@ -145,32 +142,30 @@ class Dataset:
                 hs = list(df_slice['h'])
 
                 x1s = [x0s[j] + ws[j] for j in range(len(x0s))]
-                y1s = [x1s[k] + hs[k] for k in range(len(x1s))]
+                y1s = [y0s[k] + hs[k] for k in range(len(y0s))]
 
                 bb_list = list(zip(x0s, y0s, x1s, y1s))
 
-                success, frame = cap.read()
+                yield frame, frame.nbytes, (classes_id, object_ids), bb_list, video_fname, i == 0
 
-                yield frame, sys.getsizeof(frame), (classes_id, object_ids), bb_list, video_fname, i == 0
-
-    def get_youcook2_dataset(self):
-        yc2_dir = f'{self.data_dir}/YouCook2/raw_videos/validation'
-        dirs = [f'{yc2_dir}/{x}' for x in sorted(os.listdir(yc2_dir)) if len(x)==3] # 3 digit codes usually, this is hardcoded but gets past .DS_Store files
-        fnames = []
-        for dir in dirs:
-            fnames += [f'{dir}/{x}' for x in sorted(os.listdir(dir)) if '.webm' in x]
-
-        for fname in fnames:
-            cap = cv2.VideoCapture(fname)
-
-            for i in range(70):
-                ret, byte_info = self.open_fname(fname, cap=cap)
-                if not ret:
-                    continue
-
-                byte_encoding, (frames_size, encoding_size) = byte_info
-
-                yield byte_encoding, (frames_size, encoding_size), fname
+    # def get_youcook2_dataset(self):
+    #     yc2_dir = f'{self.data_dir}/YouCook2/raw_videos/validation'
+    #     dirs = [f'{yc2_dir}/{x}' for x in sorted(os.listdir(yc2_dir)) if len(x)==3] # 3 digit codes usually, this is hardcoded but gets past .DS_Store files
+    #     fnames = []
+    #     for dir in dirs:
+    #         fnames += [f'{dir}/{x}' for x in sorted(os.listdir(dir)) if '.webm' in x]
+    #
+    #     for fname in fnames:
+    #         cap = cv2.VideoCapture(fname)
+    #
+    #         for i in range(70):
+    #             ret, byte_info = self.open_fname(fname, cap=cap)
+    #             if not ret:
+    #                 continue
+    #
+    #             byte_encoding, (frames_size, encoding_size) = byte_info
+    #
+    #             yield byte_encoding, (frames_size, encoding_size), fname
 
     def get_phone_dataset(self):
         p_dir = f'{self.data_dir}/Phone'
@@ -294,6 +289,9 @@ class Dataset:
         time_per_frame = 1 / self.simulated_fps
 
         for video_cat in video_categories:
+            if video_cat not in DAVIS_PASCAL_MAP:
+                print(f'Skipping video category due to objects not recorded in davis map: {video_cat}')
+                continue
             assert len(os.listdir(f'{data_dir}/JPEGImages/Full-Resolution/{video_cat}')) == \
                    len(os.listdir(f'{data_dir}/Annotations/Full-Resolution/{video_cat}'))
             vid_frame_nums = sorted([x for x in os.listdir(f'{data_dir}/JPEGImages/Full-Resolution/{video_cat}')
