@@ -34,17 +34,17 @@ class Server:
 
         elif self.compressor == 'classical':
             if self.model_name == 'faster_rcnn':
-                from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2
-                self.server_model = fasterrcnn_resnet50_fpn_v2(pretrained=True).eval()
+                from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2, FasterRCNN_ResNet50_FPN_V2_Weights
+                self.server_model = fasterrcnn_resnet50_fpn_v2(weights=FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT).eval()
             elif self.model_name == 'mask_rcnn':
-                from torchvision.models.detection import maskrcnn_resnet50_fpn
-                self.server_model = maskrcnn_resnet50_fpn(pretrained=True).eval()
+                from torchvision.models.detection import maskrcnn_resnet50_fpn, MaskRCNN_ResNet50_FPN_Weights
+                self.server_model = maskrcnn_resnet50_fpn(weights=MaskRCNN_ResNet50_FPN_Weights.DEFAULT).eval()
             elif self.model_name == 'retinanet':
-                from torchvision.models.detection import retinanet_resnet50_fpn
-                self.server_model = retinanet_resnet50_fpn(pretrained=True).eval()
+                from torchvision.models.detection import retinanet_resnet50_fpn, RetinaNet_ResNet50_FPN_Weights
+                self.server_model = retinanet_resnet50_fpn(weights=RetinaNet_ResNet50_FPN_Weights.DEFAULT).eval()
             elif self.model_name == 'deeplabv3':
-                from torchvision.models.segmentation import deeplabv3_resnet50
-                self.server_model = deeplabv3_resnet50(weights='DEFAULT').eval()
+                from torchvision.models.segmentation import deeplabv3_resnet50, DeepLabV3_ResNet50_Weights
+                self.server_model = deeplabv3_resnet50(weights=DeepLabV3_ResNet50_Weights.DEFAULT).eval()
             else:
                 raise NotImplementedError
 
