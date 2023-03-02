@@ -49,6 +49,10 @@ PARAMS['BOX_LIMIT'] = 10 # max number of boxes to track, only applicable if EVAL
 PARAMS['TRACKING'] = True # execute + evaluate a tracking algorithm; if false, evaluates the detector
 PARAMS['TRACKER'] = 'MEDIANFLOW' # tracker algorithm
 PARAMS['BBOX_SEG'] = None
+# "policy" to use to add frames to tracker, 'None' is always add
+# choose between 'CONSTANT'
+PARAMS['WAITING_POLICY'] = None
+PARAMS['WAITING_CONSTANT_N'] = 1 # if 'constant' policy (add every n frames), set n
 PARAMS['CATCHUP_LIMIT'] = 15
 
 # params for the object detection / segmentation

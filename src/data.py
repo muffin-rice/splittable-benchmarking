@@ -124,6 +124,8 @@ class Dataset:
             annotation_df = pd.read_csv(annotation_fname, delimiter=' ', header=None, names=col_names)
             cap = cv2.VideoCapture(video_fname)
             success, frames = extract_frames(cap, vid_shape=None)
+            if not success:
+                continue
             time_since_previous_frame = time.time()
             for i in range(frames.shape[0]):
                 frame = frames[i, ...]

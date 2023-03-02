@@ -111,6 +111,9 @@ def extract_frames(cap, vid_shape = (720, 1280), frame_limit=150, transpose_fram
     for i in range(frame_limit):
         success, frame = cap.read()
         if not success:
+            if len(frames) > 0:
+                break
+
             return False, np.array(frames)
 
         if transpose_frame:

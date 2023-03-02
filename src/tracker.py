@@ -63,10 +63,37 @@ class Tracker:
 
 class BoxTracker(Tracker):
     '''Tracker uses format xyhw – change bbox inputs and outputs'''
-    def __init__(self, logger : ConsoleLogger, tracker_type = PARAMS['TRACKER']):
+    def check_addframe_constant(self, nframes : int = PARAMS['WAITING_CONSTANT_N']):
+        self.waiting_iteration += 1
+        if self.waiting_iteration == nframes:
+            self.waiting_iteration = 0
+            return True
+        return False
+
+    def reset_waiting_policy_constant(self):
+        self.waiting_iteration = 0
+
+    def _init_waiting_policy(self, waiting_policy):
+        if waiting_policy == 'CONSTANT':
+            self.logger.log_info(f'Setting up constant waiting policy with addframe at {PARAMS["WAITING_CONSTANT_N"]}')
+            self.waiting_iteration = 0
+            self.check_addframe = self.check_addframe_constant
+            self.reset_waiting_policy = self.reset_waiting_policy_constant
+        elif waiting_policy is None:
+            self.logger.log_info('Default waiting policy (add every frame for catchup)')
+            pass
+        else:
+            raise NotImplementedError(f'No other waiting policy implemented: {waiting_policy}')
+
+
+    def __init__(self, logger : ConsoleLogger, tracker_type = PARAMS['TRACKER'],
+                 waiting_policy = PARAMS['WAITING_POLICY']):
         self.tracker_type = tracker_type
         self.trackers = {} # id : tracker
         self.logger = logger
+        self.check_addframe = lambda : True # default policy, should return the boolean and update any hidden states
+        self.reset_waiting_policy = lambda : None
+        self._init_waiting_policy(waiting_policy)
 
     def restart_tracker(self, frame : np.ndarray, detections : {int : (int)}, target_tracker : str = None):
         '''Creates trackers for a new set of Detections
@@ -109,12 +136,14 @@ class BoxTracker(Tracker):
 
     @abstractmethod
     def waiting_step(self, frame):  # step executed to prepare for the new data
-        self.catchup_frames.append(frame)
+        if self.check_addframe():
+            self.catchup_frames.append(frame)
 
     @abstractmethod
     def reset_mp(self):
         self.catchup_frames = []
         self.mp_trackers = {}
+        self.reset_waiting_policy()
 
     def execute_catchup(self, old_timestep, old_detections):
         '''executes catchup; '''
@@ -138,11 +167,12 @@ class BoxTracker(Tracker):
                 'added_frames' : len(self.catchup_frames) - starting_length}
 
 class MaskTracker(Tracker):
-    def __init__(self, logger : ConsoleLogger, tracker_type = PARAMS['TRACKER']):
+    def __init__(self, logger : ConsoleLogger, tracker_type = PARAMS['TRACKER'],
+                 waiting_policy = PARAMS['WAITING_POLICY']):
         self.current_mask = None # don't really need the current_mask
         self.logger = logger
         self.tracker_type = tracker_type
-        self.box_tracker = BoxTracker(logger)
+        self.box_tracker = BoxTracker(logger, waiting_policy=waiting_policy)
         self.object_references = None
 
     def get_boxes(self, masks : {int : np.array}) -> {int : [int]}:
@@ -181,7 +211,8 @@ class MaskTracker(Tracker):
 
 class BoxMaskTracker(Tracker):
     '''tracker that takes as input boxes but outputs masks in the process_frame code'''
-    def __init__(self, logger : ConsoleLogger, segmenter = PARAMS['BBOX_SEG'], tracker_type = PARAMS['TRACKER']):
+    def __init__(self, logger : ConsoleLogger, segmenter = PARAMS['BBOX_SEG'], tracker_type = PARAMS['TRACKER'],
+                 waiting_policy = PARAMS['WAITING_POLICY']):
         self.segmenter = segmenter
         if segmenter == 'knn': # nearest neighbor clustering
             self.segment_image = segment_image_knn
@@ -191,7 +222,7 @@ class BoxMaskTracker(Tracker):
             raise NotImplementedError
 
         self.logger = logger
-        self.box_tracker = BoxTracker(tracker_type)
+        self.box_tracker = BoxTracker(tracker_type, waiting_policy=waiting_policy)
         self.object_references = None
 
     def process_frame(self, frame):
