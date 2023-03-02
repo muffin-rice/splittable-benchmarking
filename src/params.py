@@ -50,6 +50,9 @@ PARAMS['TRACKING'] = True # execute + evaluate a tracking algorithm; if false, e
 PARAMS['TRACKER'] = 'MEDIANFLOW' # tracker algorithm
 PARAMS['BBOX_SEG'] = None
 PARAMS['CATCHUP_LIMIT'] = 15
+PARAMS['CATCHUP_MULTITHREAD'] = False # multithread tracker? ignore below args if False
+PARAMS['NUM_CATCHUP_THREADS'] = 3 # max number of catchup threads
+PARAMS['MIN_OBJECTS_THREAD'] = 5 # minimum num objects / thread (don't spawn threads if unnecessary)
 
 # params for the object detection / segmentation
 PARAMS['TASK'] = 'det' # det, seg, gt; gt means no predictions will happen
