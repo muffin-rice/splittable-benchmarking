@@ -1,10 +1,13 @@
 numpy==1.23.4
 opencv_python==4.6.0.66
 pandas==1.5.1
-Pillow==9.4.0
+Pillow~=9.2.0
 sc2bench==0.0.2
 scikit_image==0.19.3
-scipy==1.10.0
+scipy~=1.9.2
 torch==1.12.1
 torchdistill==0.3.2
 torchvision==0.13.1
+
+opencv-python~=4.6.0.66
+scikit-image~=0.19.3

@@ -7,6 +7,8 @@ import torch
 from copy import deepcopy
 from skimage import color
 from scipy.optimize import linear_sum_assignment
+import pandas as pd
+import pycocotools.mask as rletools
 
 def default_detection_postprocessor(d):
     return
@@ -305,34 +307,45 @@ def remove_classes_from_pred(preds_with_classes : {int : {}}, add_clause = None,
 
     return detections, object_id_mapping
 
-def separate_objects_in_mask(mask, num_objects, starting_id = 1, num_iters = 10) -> {int : np.array}:
+
+def separate_objects_in_mask(mask, num_objects, starting_id=1, num_iters=10) -> {int: np.array}:
     '''given a binary mask cluster the objects given the numobjects
     returns random id : mask'''
     assert len(np.unique(mask)) == 2, f'Mask is not binary: {mask}, {np.unique(mask)}'
     if num_objects == 1:
-        return {starting_id : mask}
+        return {starting_id: mask}
 
     mask_indices = np.array(tuple(x for x in zip(*np.where(mask))))
     start_inds = np.random.choice(np.arange(mask_indices.shape[0]), num_objects, replace=False)
-    cluster_starts = mask_indices[start_inds] # num_objects x 2
-    index_mask = np.indices((mask.shape[0], mask.shape[1])).transpose(1,2,0)
+    cluster_starts = mask_indices[start_inds]  # num_objects x 2
+    index_mask = np.indices((mask.shape[0], mask.shape[1])).transpose(1, 2, 0)
 
     assert num_iters > 1
 
     for i in range(num_iters):
         mask_distances = np.zeros((num_objects, mask.shape[0], mask.shape[1]))
         for j, cluster in enumerate(cluster_starts):
-            mask_distances[j, :, :] = np.linalg.norm(index_mask - cluster, ord=2)
+            mask_distance = index_mask - cluster[np.newaxis, np.newaxis, :]
+            mask_distance = np.sqrt(mask_distance[:, :, 0] ** 2 + mask_distance[:, :, 1] ** 2)
+            mask_distances[j, :, :] = mask_distance
 
         # cluster mins is H x W array of the argmin
-        cluster_mins = np.argmin(mask_distances, axis = 0) + 1
-        cluster_mins = cluster_mins[mask]
+        cluster_mins = np.argmin(mask_distances, axis=0) + 1
+        cluster_mins[~mask] = 0
 
         # find the average of the centroids
         for j in range(cluster_starts.shape[0]):
-            cluster_starts[j, :] = np.mean(index_mask[cluster_mins == j+1], axis=[0,1])
+            cluster_mask = (cluster_mins == j + 1)
+            if cluster_mask.sum == 0:
+                # randomize another start
+                cluster_starts[j, :] = np.random.choice(mask_indices)
+                continue
 
-    return {starting_id + i : cluster_mins[cluster_mins == i] for i in range(num_objects)}
+            curr_cluster = index_mask[cluster_mask]  # n x 2 (indices, n is the number of 1s in the cluster_mask)
+
+            cluster_starts[j, :] = np.mean(curr_cluster, axis=0)
+
+    return {starting_id + i: cluster_mins == i + 1 for i in range(num_objects)}
 
 
 def map_mask_ids(pred_mask_allclasses : {int : np.array}, gt_mask_classes : {int : {int : np.array}}):
@@ -420,7 +433,7 @@ def separate_segmentation_mask(mask : np.array, OBJECT_LIMIT = 20) -> {int : np.
     '''given a segmentation of pixels where each pixel value corresponds to a specific object,
     return {object_id : binary_mask} '''
     object_ids = np.unique(mask)
-    assert len(object_ids) < OBJECT_LIMIT, 'too many objects in segmentation scene'
+    assert len(object_ids) < OBJECT_LIMIT, f'too many objects in segmentation scene: {len(object_ids)}'
 
     return {int(object_id) : mask == object_id for object_id in object_ids}
 
@@ -428,7 +441,7 @@ def separate_segmentation_mask(mask : np.array, OBJECT_LIMIT = 20) -> {int : np.
 def get_bbox_from_mask(binary_mask : np.array) -> [int]:
     '''given a 2D 0/1 binary input mask, output the xyhw bounding box'''
 
-    assert len(binary_mask.shape) == 2, 'dimenisons of binary mask are incorrect'
+    assert len(binary_mask.shape) == 2, 'dimensions of binary mask are incorrect'
     assert tuple(np.unique(binary_mask)) == (0,1)
 
     indices = np.where(binary_mask == 1)
@@ -446,14 +459,17 @@ def binarize_mask(mask : np.array) -> np.array:
 
     return binary_mask
 
-def combine_masks(object_masks : {int : np.array}) -> np.array:
+def combine_binary_masks(object_masks : {int : np.array}) -> np.array:
+    '''combines an object_id : binary_mask and maps it to a single segmentation image where the
+    segmentation values are the object_id'''
     initial_mask = None
     for object_id in object_masks.keys():
-        if not initial_mask:
-            initial_mask = object_masks[object_id].copy()
-
+        mask_objected = object_masks[object_id] * object_id
+        if initial_mask is None:
+            initial_mask = mask_objected.copy()
         else:
-            initial_mask = np.logical_or(initial_mask, object_masks[object_id])
+            initial_mask += mask_objected
+
 
     return initial_mask
 
@@ -577,3 +593,17 @@ def segment_image_knn(full_img: np.array, object_boxes: {int: [int]}, object_ref
 
 def round_tracker_outputs(objects):
     return {k : v.astype(int) for k, v in objects.items()}
+
+def decode_masks_from_df(df : pd.DataFrame, w : int, h : int) -> {int : np.array}:
+    '''with a df at the timestep, return the object_id : mask'''
+    masks = {}
+    for i, row in df.iterrows():
+        mask_dict = {'size' : [h,w],
+                     'counts' : row[5]}
+
+        masks[row[1]] = rletools.decode(mask_dict)
+
+    return masks
+
+def cast_bbox_to_int(box_dict : {int : (float,)}) -> {int : (int,)}:
+    return {k : tuple(int(x) for x in box) for k, box in box_dict.items()}

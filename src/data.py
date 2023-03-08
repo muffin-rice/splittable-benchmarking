@@ -29,6 +29,8 @@ class Dataset:
             self.dataset = self.get_kitti_dataset
         elif dataset == 'davis':
             self.dataset = self.get_davis_dataset
+        elif dataset == 'mots':
+            self.dataset = self.get_mots_dataset
         else:
             raise NotImplementedError('No Dataset Found.')
 
@@ -331,3 +333,39 @@ class Dataset:
                 yield vid_frame, sys.getsizeof(vid_frame), (obj_classes, obj_ids), mask_frame, video_frames[i], i==0
 
             break
+
+    def get_mots_dataset(self, shape=PARAMS['VIDEO_SHAPE'], frame_limit = PARAMS['FRAME_LIMIT']):
+        data_dir = f'{self.data_dir}/MOT/MOTS'
+        video_cats = sorted([x for x in os.listdir(f'{data_dir}/train') if x != '.DS_Store']) # prune ds_store
+
+        for video_cat in video_cats:
+            cat_dir = f'{data_dir}/train/{video_cat}'
+            df = pd.read_csv(f'{cat_dir}/gt/gt.txt', sep=' ', header=None)
+            num_frames = df[0].max()
+
+            unique_heights = df[3].unique()
+            assert len(unique_heights) == 1
+            h_vid = unique_heights[0] # height of video
+
+            unique_widths = df[4].unique()
+            assert len(unique_widths) == 1
+            w_vid = unique_widths[0] # width of video
+
+            img_fnames = sorted([f'{cat_dir}/img1/{x}' for x in os.listdir(f'{cat_dir}/img1') if '.jpg' in x or '.png' in x])
+
+            assert len(img_fnames) == num_frames, f'Number of frames mismatched: {len(img_fnames)}, {num_frames}'
+
+            num_vids = min(1, num_frames // frame_limit) # if 1, just do all the frames
+
+            for vid_partition in range(num_vids):
+                for i in range(frame_limit):
+                    df_timestep = df[df[0] == i+1] # timestep is 1-indexed
+                    if shape is None:
+                        frame = np.array(Image.open(img_fnames[i]))
+                    else:
+                        frame = np.array(Image.open(img_fnames[i]).resize(shape))
+
+                    mask = combine_binary_masks(decode_masks_from_df(df_timestep, w_vid, h_vid))
+                    class_info = ((0, *df_timestep[2],), (0, *df_timestep[1],))
+
+                    yield frame, frame.nbytes, class_info, mask, img_fnames[i], i==0
