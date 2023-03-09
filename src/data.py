@@ -359,13 +359,13 @@ class Dataset:
 
             for vid_partition in range(num_vids):
                 for i in range(frame_limit):
-                    df_timestep = df[df[0] == i+1] # timestep is 1-indexed
+                    actual_i = vid_partition * frame_limit + i
+                    df_timestep = df[df[0] == actual_i+1] # timestep is 1-indexed
                     if shape is None:
-                        frame = np.array(Image.open(img_fnames[i]))
+                        frame = np.array(Image.open(img_fnames[actual_i]))
                     else:
-                        frame = np.array(Image.open(img_fnames[i]).resize(shape))
+                        frame = np.array(Image.open(img_fnames[actual_i]).resize(shape))
 
                     mask = combine_binary_masks(decode_masks_from_df(df_timestep, w_vid, h_vid))
-                    class_info = ((0, *df_timestep[2],), (0, *df_timestep[1],))
-
-                    yield frame, frame.nbytes, class_info, mask, img_fnames[i], i==0
+                    class_info = ((0, *(df_timestep[2] - 1),), (0, *df_timestep[1],))
+                    yield frame, frame.nbytes, class_info, mask, img_fnames[actual_i], i==0
