@@ -106,7 +106,7 @@ def get_gt_dets_from_mask_as_pred(class_info : ((int,), (int,)), gt_mask : np.ar
         if class_info[0][i] not in DESIRED_CLASSES:
             continue
 
-        gt_boxes[class_info[1][i]] = mask_maps[class_info[1][i]]
+        gt_boxes[class_info[1][i]] = get_bbox_from_mask(mask_maps[class_info[1][i]])
 
     return gt_boxes
 
@@ -118,9 +118,9 @@ class Client:
                 self.tracker = BoxTracker(self.logger)
             elif self.run_type == 'SM':
                 # self.tracker = MaskTracker(self.logger)
-                self.tracker = MaskTracker(self.logger)
+                self.tracker = BoxMaskTracker(self.logger)
             elif self.run_type == 'BBSM':
-                self.tracker = BoxTracker(self.logger)
+                self.tracker = BoxMaskTracker(self.logger)
             else:
                 raise NotImplementedError
 
@@ -328,7 +328,7 @@ class Client:
     def _get_model_data(self):
         '''uses the model (whether waiting for server or running offline) to get desired information'''
 
-        assert self.is_detection() or self.is_segmentation()
+        assert not self.is_gt()
 
         if self.server_connect: # connects to server and gets the data from there
             return self._get_server_data()
@@ -564,18 +564,12 @@ class Client:
 
     def handle_thread_result(self):
         '''information received from server; perform action with outdated information'''
-        if self.is_detection(): # launch catchup algorithm
-            old_detections, self.old_object_gt_mapping = self.parallel_thread.result()
-            self.stats_logger.push_log({'num_detections': len(old_detections), 'tracker': False})
-            self.logger.log_info('Parallel detections received; launching catchup')
+        if not self.is_gt(): # launch catchup algorithm
+            old_pred, self.old_object_gt_mapping = self.parallel_thread.result()
+            self.stats_logger.push_log({'num_detections': len(old_pred), 'tracker': False})
+            self.logger.log_info('Parallel predictions received; launching catchup')
             self.parallel_thread = self.parallel_executor.submit(self._execute_catchup, self.old_timestep,
-                                                                 old_detections)
-        elif self.is_segmentation():
-            old_detections, self.old_object_gt_mapping = self.parallel_thread.result()
-            self.stats_logger.push_log({'num_masks': len(old_detections), 'tracker': False})
-            self.logger.log_info('Parallel detections received; launching catchup')
-            self.parallel_thread = self.parallel_executor.submit(self._execute_catchup, self.old_timestep,
-                                                                 old_detections)
+                                                                 old_pred)
 
 
     def handle_catchup_result(self):
@@ -749,8 +743,10 @@ class Client:
                     elif self.run_type == 'BBSM': # pred is still in "bb" mode
                         self.logger.log_debug('Eval detections and pred')
                         self.eval_detections(gt_as_pred, pred, self.object_gt_mapping)
-                        gt_masks = get_gt_masks(class_info, gt)
-                        self.eval_segmentation(gt_masks, segment_image_mrf(data, pred), self.object_gt_mapping)
+                        gt_masks_as_pred = get_gt_masks_as_pred(class_info, gt)
+                        # map boxes to integers
+                        pred_masks = self.tracker.get_masks()
+                        self.eval_segmentation(gt_masks_as_pred, pred_masks, self.object_gt_mapping)
 
                 # push log
                 self.stats_logger.push_log({}, append=True)

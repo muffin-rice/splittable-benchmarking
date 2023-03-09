@@ -184,7 +184,7 @@ class MaskTracker(Tracker):
         self.box_tracker.restart_tracker(frame, self.get_boxes(mask))
 
     def process_frame(self, frame):
-        new_boxes = round_tracker_outputs(self.box_tracker.process_frame(frame))
+        new_boxes = cast_bbox_to_int(self.box_tracker.process_frame(frame))
         self.current_mask = segment_image_knn(frame, new_boxes, self.object_references)
         return self.current_mask
 
@@ -222,22 +222,25 @@ class BoxMaskTracker(Tracker):
             raise NotImplementedError
 
         self.logger = logger
-        self.box_tracker = BoxTracker(tracker_type, waiting_policy=waiting_policy)
+        self.box_tracker = BoxTracker(logger, tracker_type, waiting_policy=waiting_policy)
         self.object_references = None
+        self.current_processed_masks = None
 
     def process_frame(self, frame):
         boxes = self.box_tracker.process_frame(frame)
 
         if self.segmenter == 'knn':
-            return segment_image_knn(frame, round_tracker_outputs(boxes), self.object_references)
+            self.current_processed_masks = segment_image_knn(frame, cast_bbox_to_int(boxes), self.object_references)
+            return boxes
 
-        raise NotImplementedError
+        raise NotImplementedError(f'Segmenter not implemented : {self.segmenter}')
 
     def restart_tracker(self, frame, pred_boxes : {int : np.array}):
         # build references
         if self.segmenter == 'knn':
-            self.object_references = get_midbox_references(pred_boxes, frame)
+            self.object_references = get_midbox_references(cast_bbox_to_int(pred_boxes), frame)
         self.box_tracker.restart_tracker(frame, pred_boxes)
+        self.current_processed_masks = segment_image_knn(frame, cast_bbox_to_int(pred_boxes), self.object_references)
 
     def init_multiprocessing(self):
         self.old_frame = None
@@ -251,8 +254,11 @@ class BoxMaskTracker(Tracker):
     def execute_catchup(self, old_timestep, old_outputs) -> {}:
         return_info = self.box_tracker.execute_catchup(old_timestep, old_outputs)
         if self.segmenter == 'knn':
-            self.object_references = get_midbox_references(old_outputs, self.old_frame)
+            self.object_references = get_midbox_references(cast_bbox_to_int(old_outputs), self.old_frame)
         return return_info
+
+    def get_masks(self):
+        return self.current_processed_masks
 
     def reset_mp(self):
         self.old_frame = None
