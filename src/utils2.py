@@ -201,14 +201,14 @@ def map_xyhw_to_xyxy(xyhw_box):
 
     return xyxy_box
 
-def map_coco_outputs(outputs : {str : torch.Tensor}) -> ({int : {int : (int,)}}, [float]):
+def map_coco_outputs(outputs : {str : torch.Tensor}, score_thresh=0.5) -> ({int : {int : (int,)}}, [float]):
     '''Maps the model output (dict with keys boxes, labels, scores) to {class_label : {id : boxes}}'''
     boxes = outputs['boxes'].detach().numpy()
     labels = outputs['labels'].detach().numpy()
     scores = outputs['scores'].detach().numpy()
     # ignore scores for now
 
-    high_scores = scores>0.4
+    high_scores = scores>score_thresh
 
     boxes, labels, scores = boxes[high_scores], labels[high_scores], scores[high_scores]
 
@@ -227,6 +227,38 @@ def map_coco_outputs(outputs : {str : torch.Tensor}) -> ({int : {int : (int,)}},
         curr_id+=1
 
     return d, scores
+
+def map_coco_maskrcnn_outputs(outputs : {str : torch.Tensor}, score_thresh=0.5) -> ({int : {int : (int,)}}, [float]):
+    '''Maps the model output (dict with keys boxes, labels, scores) to {class_label : {id : boxes}}
+    outputs boxes ({class_id : {obj_id : bbox}}) and masks ({class_id : {obj_id : mask}})'''
+    boxes = outputs['boxes'].detach().numpy()
+    labels = outputs['labels'].detach().numpy()
+    scores = outputs['scores'].detach().numpy()
+    masks = outputs['masks'].detach().numpy()
+    # ignore scores for now
+
+    high_scores = scores>score_thresh
+
+    boxes, labels, scores, masks = boxes[high_scores], labels[high_scores], scores[high_scores], masks[high_scores] > 0.5
+
+    d_boxes = {}
+    d_masks = {}
+    curr_id = 0
+    for i in range(labels.shape[0]):
+        class_id = int(labels[i])
+        if class_id not in DESIRED_CLASSES:
+            continue
+
+        if class_id in d_boxes:
+            d_boxes[class_id][curr_id] = tuple(boxes[i])
+            d_masks[class_id][curr_id] = masks[i,0]
+        else:
+            d_boxes[class_id] = {curr_id : tuple(boxes[i])}
+            d_masks[class_id] = {curr_id : masks[i,0]}
+
+        curr_id+=1
+
+    return d_boxes, d_masks, scores
 
 def map_indexes(gt_objects : {int : any}, pred_objects : {int : any}, iou_calculator):
     index_mapping = {}
@@ -386,20 +418,20 @@ def map_mask_ids(pred_mask_allclasses : {int : np.array}, gt_mask_classes : {int
     return index_mapping, missing_objects
 
 def eval_predictions(gt : {int : any}, pred : {int : any}, object_id_mapping : {int : int},
-                     metric_evaluator) -> ({int : float}, {int}):
+                     metric_evaluator, pred_format) -> ({int : float}, {int}):
     scores = {}
 
     for object_id in pred.keys():
         assert object_id in object_id_mapping
 
         gt_object_id = object_id_mapping[object_id]
-        key_format = f'pred_{gt_object_id}'
+        key_formatted = pred_format(gt_object_id)
 
         if gt_object_id not in gt: #in tracker but not in annotations
-            scores[key_format] = -1
+            scores[key_formatted] = -1
             continue
 
-        scores[key_format] = metric_evaluator(gt[gt_object_id], pred[object_id])
+        scores[key_formatted] = metric_evaluator(gt[gt_object_id], pred[object_id])
 
     # check if there are any missing detections
     pred_object_ids = set(object_id_mapping.values())
@@ -416,7 +448,8 @@ def eval_detections(gt_detections : {int : (int,)}, pred_detections : {int : (in
                     object_id_mapping : {int : int}) -> ({int : float}, {int}):
     '''Detections are in the format of {object_id : [box]} and {pred_oid : gt_oid}
     Returns in the format of {object_id (from either) : score}'''
-    return eval_predictions(gt_detections, pred_detections, object_id_mapping, calculate_bb_iou)
+    format_lambda = lambda object_id : f'p_d_{object_id}'
+    return eval_predictions(gt_detections, pred_detections, object_id_mapping, calculate_bb_iou, format_lambda)
 
 
 def rgb2lab(img):
@@ -437,9 +470,11 @@ def separate_segmentation_mask(mask : np.array, OBJECT_LIMIT = 20) -> {int : np.
 
     return {int(object_id) : mask == object_id for object_id in object_ids}
 
+def transpose_box(box : (int,)) -> (int,):
+    return (box[1], box[0], box[3], box[2])
 
 def get_bbox_from_mask(binary_mask : np.array) -> [int]:
-    '''given a 2D 0/1 binary input mask, output the xyhw bounding box'''
+    '''given a 2D 0/1 binary input mask, output the xyxy bounding box'''
 
     assert len(binary_mask.shape) == 2, 'dimensions of binary mask are incorrect'
     assert tuple(np.unique(binary_mask)) == (0,1)
@@ -449,7 +484,8 @@ def get_bbox_from_mask(binary_mask : np.array) -> [int]:
     x_min, x_max = indices[0].min(), indices[0].max()
     y_min, y_max = indices[1].min(), indices[1].max()
 
-    return [x_min, x_max - x_min, y_min, y_max - y_min]
+    # return [x_min, y_min, x_max, y_max]
+    return [y_min, x_min, y_max, x_max]
 
 def binarize_mask(mask : np.array) -> np.array:
     binary_mask = np.zeros_like(mask, dtype=bool)
@@ -475,7 +511,8 @@ def combine_binary_masks(object_masks : {int : np.array}) -> np.array:
 
 def eval_segmentation(gt_masks : {int : np.array}, pred_masks : {int : np.array}, object_id_mapping : {int : int}):
     '''evals in the format of class_id : score'''
-    return eval_predictions(gt_masks, pred_masks, object_id_mapping, calculate_mask_iou)
+    format_lambda = lambda object_id: f'p_d_{object_id}'
+    return eval_predictions(gt_masks, pred_masks, object_id_mapping, calculate_mask_iou, format_lambda)
 
 def eval_segmentation_diffmasks(gt_masks : {int : np.array}):
     pass
@@ -535,7 +572,7 @@ def get_knn_references(masks : {int : np.array}, full_img : np.array) -> {int : 
 def get_midbox_references(bboxes : {int : (int,)}, full_img : np.array, box_radius=5) -> {int : np.array}:
     assert full_img.shape[2] == 3
     box_references = {}
-    igm_lab = rgb2lab(full_img)
+    img_lab = rgb2lab(full_img)
     for object_id, bbox in bboxes.items():
         if (bbox[2] - bbox[0] < 10) or (bbox[3] - bbox[1] < 10):
             print(f'bbox too small: {full_img}')
@@ -543,9 +580,9 @@ def get_midbox_references(bboxes : {int : (int,)}, full_img : np.array, box_radi
 
         # midbox as reference
         midx, midy = (bbox[0] + bbox[2]) // 2, (bbox[1] + bbox[3]) // 2
-        midbox = full_img[midx-box_radius : midx+box_radius, midy-box_radius : midy+box_radius]
+        midbox = img_lab[midy-box_radius : midy+box_radius, midx-box_radius : midx+box_radius]
 
-        box_references[object_id] = midbox.mean(axis=0)
+        box_references[object_id] = midbox.mean(axis=(0,1))
         assert box_references[object_id].shape[0] == 3, f'Shape of mean is incorrect: {box_references[object_id].shape}'
 
     return box_references
@@ -555,10 +592,10 @@ def segment_subimg_knn(subimg, bg_ref, object_ref, norm=1) -> np.array:
     bg_dists = (subimg - bg_ref) ** 2 / norm
     ref_dists = (subimg - object_ref) ** 2 / norm
 
-    return ref_dists.sum(axis=-1) > bg_dists.sum(axis=-1)
+    return ref_dists.sum(axis=-1) < bg_dists.sum(axis=-1)
 
 def segment_image_knn(full_img: np.array, object_boxes: {int: [int]}, object_references: {int : np.array}, max_box_radius=5):
-    '''for every box mapped as object_id : [bbox (XYWH)], return the cluster
+    '''for every box mapped as object_id : [bbox (XYXY)], return the cluster
     full_img should be H x W x 3'''
     assert full_img.shape[2] == 3
 
@@ -579,20 +616,17 @@ def segment_image_knn(full_img: np.array, object_boxes: {int: [int]}, object_ref
     obj_masks = {}
 
     for object_id, bbox in object_boxes.items():
-        if bbox[2] < max_box_radius or bbox[3] < max_box_radius:
+        if bbox[2] - bbox[0] < max_box_radius or bbox[3] - bbox[1] < max_box_radius:
             continue
 
         # bounding box to segment
-        subimg_lab = img_lab[bbox[0]: bbox[0] + bbox[2], bbox[1]: bbox[1] + bbox[3]]
+        subimg_lab = img_lab[bbox[1]: bbox[3], bbox[0]: bbox[2]]
         mask = segment_subimg_knn(subimg_lab, ref_bg, object_references[object_id], image_normalization)
 
         obj_masks[object_id] = np.zeros((full_img.shape[0], full_img.shape[1]))
-        obj_masks[object_id][bbox[0]: bbox[0] + bbox[2], bbox[1]: bbox[1] + bbox[3]] = mask
+        obj_masks[object_id][bbox[1]: bbox[3], bbox[0]: bbox[2]] = mask
 
     return obj_masks
-
-def round_tracker_outputs(objects):
-    return {k : v.astype(int) for k, v in objects.items()}
 
 def decode_masks_from_df(df : pd.DataFrame, w : int, h : int) -> {int : np.array}:
     '''with a df at the timestep, return the object_id : mask'''
