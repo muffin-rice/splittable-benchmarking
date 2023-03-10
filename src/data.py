@@ -11,26 +11,21 @@ class Dataset:
         self.data_dir = data_dir
         self.logger = ConsoleLogger()
         self.simulated_fps = fps
-        if dataset == 'latency':
-            self.dataset = self.get_toy_dataloader
-        elif dataset == 'framelen':
-            self.dataset = self.get_framelen_dataset
-        # elif dataset == 'bdd':
-        #     self.dataset = self.get_bdd_dataset
-        elif dataset == 'virat':
-            self.dataset = self.get_virat_dataset
-        # elif dataset == 'yc2':
-        #     self.dataset = self.get_youcook2_dataset
-        elif dataset == 'phone':
-            self.dataset = self.get_phone_dataset
-        elif dataset == 'kitti_toy':
-            self.dataset = self.get_model_toy_dataset
-        elif dataset == 'kitti':
-            self.dataset = self.get_kitti_dataset
-        elif dataset == 'davis':
-            self.dataset = self.get_davis_dataset
-        elif dataset == 'mots':
-            self.dataset = self.get_mots_dataset
+        dataset_dict = {
+            'davis': self.get_davis_dataset,
+            'framelen': self.get_framelen_dataset,
+            'kitti': self.get_kitti_dataset,
+            'kitti_toy': self.get_model_toy_dataset,
+            'latency': self.get_toy_dataloader,
+            'mots': self.get_mots_dataset,
+            'mots-boxes': self.get_mots_dataset_as_boxes,
+            'phone': self.get_phone_dataset,
+            'virat': self.get_virat_dataset,
+            # 'yc2': self.get_youcook2_dataset,
+            # 'bdd': self.get_bdd_dataset,
+        }
+        if dataset in dataset_dict:
+            self.dataset = dataset_dict[dataset]
         else:
             raise NotImplementedError('No Dataset Found.')
 
@@ -369,3 +364,13 @@ class Dataset:
                     mask = combine_binary_masks(decode_masks_from_df(df_timestep, w_vid, h_vid))
                     class_info = ((0, *(df_timestep[2] - 1),), (0, *df_timestep[1],))
                     yield frame, frame.nbytes, class_info, mask, img_fnames[actual_i], i==0
+
+    def get_mots_dataset_as_boxes(self):
+        data_gen = self.get_mots_dataset()
+        frame, frame_bytes, class_info, mask, fname, start = next(data_gen)
+        # diff: change mask to boxes
+        bbox_list = []
+        for object_id in class_info[1]:
+            bbox_list.append(transpose_box(get_bbox_from_mask(mask == object_id)))
+
+        yield frame, frame_bytes, class_info, bbox_list, fname, start
