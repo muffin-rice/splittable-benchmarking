@@ -5,6 +5,7 @@ from params import PARAMS
 from utils2 import *
 from Logger import ConsoleLogger
 from abc import abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -85,15 +86,26 @@ class BoxTracker(Tracker):
         else:
             raise NotImplementedError(f'No other waiting policy implemented: {waiting_policy}')
 
+    def _init_catchup_threads(self, flag, num_threads, min_objects):
+        self.mp_catchup = flag
+        if not flag:
+            return
+
+        self.parallel_executor = ThreadPoolExecutor(max_workers=num_threads)
+        self.parallel_thread = None
+        self.max_threads = num_threads
+        self.min_objects = min_objects
 
     def __init__(self, logger : ConsoleLogger, tracker_type = PARAMS['TRACKER'],
-                 waiting_policy = PARAMS['WAITING_POLICY']):
+                 waiting_policy = PARAMS['WAITING_POLICY'], mp_catchup = PARAMS['CATCHUP_MULTITHREAD'],
+                 mp_threads = PARAMS['NUM_CATCHUP_THREADS'], mp_objs_pthread = PARAMS['MIN_OBJECTS_THREAD']):
         self.tracker_type = tracker_type
         self.trackers = {} # id : tracker
         self.logger = logger
         self.check_addframe = lambda : True # default policy, should return the boolean and update any hidden states
         self.reset_waiting_policy = lambda : None
         self._init_waiting_policy(waiting_policy)
+        self._init_catchup_threads(mp_catchup, mp_threads, mp_objs_pthread)
 
     def restart_tracker(self, frame : np.ndarray, detections : {int : (int)}, target_tracker : str = None):
         '''Creates trackers for a new set of Detections
@@ -130,6 +142,26 @@ class BoxTracker(Tracker):
 
         return updated_boxes
 
+    def process_frame_with_objects(self, frame, objects_to_track : {int}, target_tracker : str = None) -> {int : (int)}:
+        '''returns {object_id, new_bb_xyxy}'''
+        if target_tracker is None:
+            trackers = self.trackers
+        elif target_tracker == 'mp':
+            trackers = self.mp_trackers
+        else:
+            raise NotImplementedError
+
+        updated_boxes = {}
+        for object_id, tracker in trackers.items():
+            if object_id not in objects_to_track:
+                continue
+            success, bbox_xyhw = tracker.update(frame)
+
+            if success:
+                updated_boxes[object_id] = map_xyhw_to_xyxy(bbox_xyhw)
+
+        return updated_boxes
+
     def init_multiprocessing(self):
         self.catchup_frames = []
         self.mp_trackers = {}
@@ -145,8 +177,8 @@ class BoxTracker(Tracker):
         self.mp_trackers = {}
         self.reset_waiting_policy()
 
-    def execute_catchup(self, old_timestep, old_detections):
-        '''executes catchup; '''
+    def execute_catchup_with_objects(self, old_timestep, old_detections, objects_to_track : {int}):
+        '''executes catchup with select object ids (select trackers)'''
         stats_to_return = {}
         starting_length = len(self.catchup_frames)
         self.logger.log_debug(f'Starting from {old_timestep}, processing {starting_length}')
@@ -159,12 +191,91 @@ class BoxTracker(Tracker):
             if num_processed > PARAMS['CATCHUP_LIMIT']:
                 raise AssertionError(f'Catchup taking too many iterations: {len(self.catchup_frames)}')
 
-            curr_detections = self.process_frame(self.catchup_frames[num_processed], target_tracker='mp')
+            curr_detections = self.process_frame_with_objects(self.catchup_frames[num_processed], target_tracker='mp',
+                                                              objects_to_track=objects_to_track)
             self.logger.log_debug(f'Processed frame {num_processed}')
             num_processed += 1
 
-        return {'process_time' : time.time() - starting_time,
-                'added_frames' : len(self.catchup_frames) - starting_length}
+        return {'process_time': time.time() - starting_time,
+                'added_frames': len(self.catchup_frames) - starting_length}
+
+    def execute_catchup_mp(self, old_timestep, old_detections):
+        '''for when the catchup should be multithreaded'''
+        if len(old_detections) < self.min_objects:
+            self.logger.log_info(f'{len(old_detections)} detections less than {self.min_objects}; doing single threaded')
+            return self.execute_catchup_with_objects(old_timestep, old_detections, set(self.trackers.keys()))
+
+        self.logger.log_debug('Launching catchup, multithreaded tracker')
+        starting_length = len(self.catchup_frames)
+        starting_time = time.time()
+        self.restart_tracker(self.catchup_frames[0], old_detections, target_tracker='mp')
+        # spawn threads
+        # objects to track, change this variable to become an empty list when all are being "tracked"
+        objects_to_track = list(old_detections.keys())
+        # no need to randomize objects_to_track
+        threads = []
+        if len(old_detections) > self.max_threads * self.min_objects:
+            objects_per_thread = len(old_detections) // self.max_threads
+            remaining_objects = objects_per_thread + len(old_detections) % self.max_threads
+            self.logger.log_debug(f'Threads are tracking {objects_per_thread} objects')
+
+            # submitting threads
+            threads.append(self.parallel_executor.submit(self.execute_catchup_with_objects, old_timestep,
+                                                         old_detections, objects_to_track[:remaining_objects]))
+            objects_to_track = objects_to_track[remaining_objects:]
+            for i in range(self.max_threads - 1):
+                threads.append(self.parallel_executor.submit(self.execute_catchup_with_objects, old_timestep,
+                                                             old_detections, objects_to_track[:objects_per_thread]))
+                objects_to_track = objects_to_track[objects_per_thread]
+
+        else:
+            while len(objects_to_track) > self.min_objects:
+                threads.append(self.parallel_executor.submit(self.execute_catchup_with_objects, old_timestep,
+                                                             old_detections, objects_to_track[:self.min_objects]))
+                objects_to_track = objects_to_track[self.min_objects:]
+            else:
+                if len(objects_to_track) > 0:
+                    threads.append(self.parallel_executor.submit(self.execute_catchup_with_objects, old_timestep,
+                                                                 old_detections, objects_to_track))
+                    objects_to_track = []
+
+        num_threads = len(threads)
+
+        self.logger.log_info(f'Launched {num_threads} threads')
+        assert len(objects_to_track) == 0, f'Threads did not completely fill objects_to_track: {objects_to_track}'
+        assert len(threads) > 1, f'Threads length is {num_threads}; mistake'
+
+        # wait for threads to finish running
+        # threads will modify the trackers in-place
+        time_per_loop = 0.05 # TODO: parameterize
+        previous_iter = time.time()
+        self.logger.log_debug('Starting loop to check thread status')
+        while True:
+            if time.time() - previous_iter < time_per_loop:
+                time.sleep(time_per_loop/4)
+
+            previous_iter = time.time()
+            # check on every thread
+            for thread in threads:
+                if thread.done():
+                    if thread.exception():
+                        err = thread.exception()
+                        raise NotImplementedError(f'Catchup thread errored for some reason: {str(err)}')
+                else:
+                    break # break out of for loop, back to while loop
+            else:
+                break # break out of while loop, every thread is done
+
+        return {'process_time': time.time() - starting_time,
+                'added_frames': len(self.catchup_frames) - starting_length,
+                'num_threads' : num_threads}
+
+    def execute_catchup(self, old_timestep, old_detections):
+        '''executes catchup; '''
+        if self.mp_catchup:
+            return self.execute_catchup_mp(old_timestep, old_detections)
+        else:
+            return self.execute_catchup_with_objects(old_timestep, old_detections, set(self.trackers.keys()))
 
 class MaskTracker(Tracker):
     def __init__(self, logger : ConsoleLogger, tracker_type = PARAMS['TRACKER'],

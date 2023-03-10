@@ -54,6 +54,9 @@ PARAMS['BBOX_SEG'] = None
 PARAMS['WAITING_POLICY'] = None
 PARAMS['WAITING_CONSTANT_N'] = 1 # if 'constant' policy (add every n frames), set n
 PARAMS['CATCHUP_LIMIT'] = 15
+PARAMS['CATCHUP_MULTITHREAD'] = False # multithread tracker? ignore below args if False
+PARAMS['NUM_CATCHUP_THREADS'] = 3 # max number of catchup threads
+PARAMS['MIN_OBJECTS_THREAD'] = 5 # minimum num objects / thread (don't spawn threads if unnecessary)
 
 # params for the object detection / segmentation
 PARAMS['TASK'] = 'det' # det, seg, gt; gt means no predictions will happen
