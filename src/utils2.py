@@ -484,7 +484,6 @@ def get_bbox_from_mask(binary_mask : np.array) -> [int]:
     x_min, x_max = indices[0].min(), indices[0].max()
     y_min, y_max = indices[1].min(), indices[1].max()
 
-    # return [x_min, y_min, x_max, y_max]
     return [y_min, x_min, y_max, x_max]
 
 def binarize_mask(mask : np.array) -> np.array:
@@ -641,3 +640,96 @@ def decode_masks_from_df(df : pd.DataFrame, w : int, h : int) -> {int : np.array
 
 def cast_bbox_to_int(box_dict : {int : (float,)}) -> {int : (int,)}:
     return {k : tuple(int(x) for x in box) for k, box in box_dict.items()}
+
+def get_gt_detections(class_info : ((int,), (int,)), boxes : [[int,],]) -> {int : {int : (int,)}}:
+    '''reformats the annotations into eval-friendly output
+    class_info is (class_ids, object_ids)
+    returns as {class_ids : {object_ids : box}}'''
+    assert len(class_info[0]) == len(boxes), f'class_info: {class_info} boxes: {boxes}'
+    gt_boxes = {}
+    for i in range(len(class_info[0])):
+        if class_info[0][i] not in DESIRED_CLASSES:
+            continue
+
+        if class_info[0][i] in gt_boxes:
+            gt_boxes[class_info[0][i]][class_info[1][i]] = boxes[i]
+        else:
+            gt_boxes[class_info[0][i]] = {class_info[1][i]: boxes[i]}
+
+    return gt_boxes
+
+def get_gt_detections_as_pred(class_info : ((int,), (int,)), boxes : [[int,],]) -> {int : (int,)}:
+    '''reformats the annotations into tracker-prediction format
+    class_info is (class_ids, object_ids)
+    returns as {object_id : box}'''
+    # TODO: move reformatting into dataset
+    assert len(class_info[0]) == len(boxes), f'class_info: {class_info} boxes: {boxes}'
+    return {object_id : bbox for class_id, object_id, bbox in zip(*class_info, boxes) if class_id in DESIRED_CLASSES}
+
+def get_gt_masks(class_info : ((int,), (int,)), gt_mask) -> {int : {int : np.array}}:
+    '''reformats annotations into eval-friendly format
+    class_info is (class_ids, object_ids)
+    returns mask as {class : {object : map}}'''
+    mask_maps = separate_segmentation_mask(gt_mask)
+
+    assert len(class_info[1]) == len(mask_maps.keys()), f'keys are {class_info[1]} vs. {mask_maps.keys()}'
+
+    gt_masks = {}
+
+    for i in range(len(class_info[0])):
+        curr_class = class_info[0][i]
+        curr_obj = class_info[1][i]
+
+        if curr_class not in gt_masks:
+            gt_masks[curr_class] = {curr_obj : mask_maps[curr_obj]}
+        else:
+            gt_masks[curr_class][curr_obj] = mask_maps[curr_obj]
+
+    return gt_masks
+
+def get_gt_masks_as_pred(class_info : ((int,), (int,)), gt_mask : np.array) -> np.array:
+    '''returns the given gt_mask as a {obj_id : np.array (W x H)}'''
+    # x = np.zeros((1, 21, gt_mask.shape[0], gt_mask.shape[1]))
+    d = {}
+
+    for class_id, obj_id in zip(class_info[0], class_info[1]):
+        d[obj_id] = gt_mask == obj_id
+        # x[0, class_id, :, :][gt_mask == obj_id] = 1
+
+    return d
+
+def get_gt_dets_from_mask(class_info : ((int,), (int,)), gt_mask : np.array) -> {int : {int : np.array}}:
+    '''returns mask as {class : {object : bbox}}
+    used for BBSM run when annotations are in mask format'''
+    mask_maps = separate_segmentation_mask(gt_mask)
+
+    assert len(class_info[1]) == len(mask_maps.keys()), f'keys are {class_info[1]} vs. {mask_maps.keys()}'
+
+    gt_masks = {}
+
+    for i in range(len(class_info[0])):
+        curr_class = class_info[0][i]
+        curr_obj = class_info[1][i]
+
+        if curr_class not in gt_masks:
+            gt_masks[curr_class] = {curr_obj : get_bbox_from_mask(mask_maps[curr_obj])}
+        else:
+            gt_masks[curr_class][curr_obj] = get_bbox_from_mask(mask_maps[curr_obj])
+
+    return gt_masks
+
+def get_gt_dets_from_mask_as_pred(class_info : ((int,), (int,)), gt_mask : np.array) -> {int : (int,)}:
+    '''reformats the annotations into tracker-prediction format
+    class_info is (class_ids, object_ids)
+    returns as {object_id : box}'''
+    mask_maps = separate_segmentation_mask(gt_mask)
+
+    assert len(class_info[1]) == len(mask_maps.keys()), f'keys are {class_info[1]} vs. {mask_maps.keys()}'
+    gt_boxes = {}
+    for i in range(len(class_info[0])):
+        if class_info[0][i] not in DESIRED_CLASSES:
+            continue
+
+        gt_boxes[class_info[1][i]] = get_bbox_from_mask(mask_maps[class_info[1][i]])
+
+    return gt_boxes
