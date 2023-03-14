@@ -593,7 +593,8 @@ class Client:
                 self.update_parallel_states(data)
 
                 if start: # start; no parallelization because tracker is not initialized
-                    # TODO: kill current parallel processes (if any)
+                    self.close_mp()
+
                     self.k = 1
                     self.start_counter += 1
                     self.logger.log_info('Start of loop; initializing bounding box labels.')
