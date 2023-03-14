@@ -599,7 +599,7 @@ class Client:
 
                     self.k = 1
                     self.start_counter += 1
-                    self.logger.log_info('Start of loop; initializing bounding box labels.')
+                    self.logger.log_info(f'Start of loop ({fname}); initializing bounding box labels.')
 
                     pred, self.object_gt_mapping = self.get_pred(data, class_info, gt, d,
                                                                  end_of_previous_iteration,
