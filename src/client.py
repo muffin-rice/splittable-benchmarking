@@ -529,6 +529,7 @@ class Client:
         return None
 
     def close_mp(self):
+        self.logger.log_info('Closing the other threads')
         if self.parallel_run:
             if self.parallel_state == 0: # idle
                 return
@@ -536,6 +537,7 @@ class Client:
                 assert self.parallel_thread is not None
                 self.parallel_thread.cancel()
                 self.parallel_state = 0
+                self.tracker.reset_mp()
 
         return
 
