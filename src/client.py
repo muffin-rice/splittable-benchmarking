@@ -510,7 +510,7 @@ class Client:
                             self.logger.log_debug('Catchup marked as completed; retrieving information.')
                             if self.parallel_thread.exception():
                                 err = self.parallel_thread.exception()
-                                raise NotImplementedError(f'Catchup thread errored for some reason: {str(err)}')
+                                raise err(f'Catchup thread errored for some reason: {str(err)}')
                             self.logger.log_debug('Successfully received catchup information.')
                             self.parallel_state = 0
                             self.parallel_thread = None
