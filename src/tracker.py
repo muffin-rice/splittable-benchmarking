@@ -219,7 +219,7 @@ class BoxTracker(Tracker):
         if len(old_detections) > self.max_threads * self.min_objects:
             objects_per_thread = len(old_detections) // self.max_threads
             remaining_objects = objects_per_thread + len(old_detections) % self.max_threads
-            self.logger.log_debug(f'Threads are tracking {objects_per_thread} objects')
+            self.logger.log_debug(f'Threads are tracking {objects_per_thread} objects each')
 
             # submitting threads
             threads.append(self.parallel_executor.submit(self.execute_catchup_with_objects, old_timestep,
@@ -228,7 +228,7 @@ class BoxTracker(Tracker):
             for i in range(self.max_threads - 1):
                 threads.append(self.parallel_executor.submit(self.execute_catchup_with_objects, old_timestep,
                                                              old_detections, objects_to_track[:objects_per_thread]))
-                objects_to_track = objects_to_track[objects_per_thread]
+                objects_to_track = objects_to_track[objects_per_thread:]
 
         else:
             while len(objects_to_track) > self.min_objects:
