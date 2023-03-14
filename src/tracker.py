@@ -203,7 +203,7 @@ class BoxTracker(Tracker):
 
     def execute_catchup_mp(self, old_timestep, old_detections):
         '''for when the catchup should be multithreaded'''
-        if len(old_detections) < self.min_objects:
+        if len(old_detections) <= self.min_objects:
             self.logger.log_info(f'{len(old_detections)} detections less than {self.min_objects}; doing single threaded')
             return self.execute_catchup_with_objects(old_timestep, old_detections, set(self.trackers.keys()))
 
