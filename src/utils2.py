@@ -104,10 +104,10 @@ def decode_frame(encoded_frame):
     '''decodes the encode_frame and returns it as a float array (between 0 and 1) and 3xHxW'''
     return cv2.imdecode(encoded_frame, cv2.IMREAD_COLOR).transpose(2,0,1) / 256
 
-def extract_frames(cap, vid_shape = (720, 1280), frame_limit=150, transpose_frame = False) -> (bool, np.ndarray):
+def extract_frames(cap, vid_shape = (1280, 720), frame_limit=150, transpose_frame = False) -> (bool, np.ndarray):
     '''From a cv2 VideoCapture, return a stack of frame_limit subset of the video'''
     # get 15 frames from random starting point
-    frame_limit = min(cap.get(7), frame_limit)
+    frame_limit = min(int(cap.get(7)), frame_limit)
 
     frames = []
     for i in range(frame_limit):
@@ -558,7 +558,7 @@ def segment_image_mrf(full_img : np.array, object_boxes : {int : [int]}):
 #
 #     return reference_image
 
-def get_knn_references(masks : {int : np.array}, full_img : np.array) -> {int : np.array}:
+def get_kmean_references(masks : {int : np.array}, full_img : np.array) -> {int : np.array}:
     assert full_img.shape[2] == 3
     mask_references = {}
     img_lab = rgb2lab(full_img)
@@ -586,14 +586,14 @@ def get_midbox_references(bboxes : {int : (int,)}, full_img : np.array, box_radi
 
     return box_references
 
-def segment_subimg_knn(subimg, bg_ref, object_ref, norm=1) -> np.array:
+def segment_subimg_kmean(subimg, bg_ref, object_ref, norm=1) -> np.array:
     '''segments a bounding box with a given subimg and a background reference'''
     bg_dists = (subimg - bg_ref) ** 2 / norm
     ref_dists = (subimg - object_ref) ** 2 / norm
 
     return ref_dists.sum(axis=-1) < bg_dists.sum(axis=-1)
 
-def segment_image_knn(full_img: np.array, object_boxes: {int: [int]}, object_references: {int : np.array}, max_box_radius=5):
+def segment_image_kmeans(full_img: np.array, object_boxes: {int: [int]}, object_references: {int : np.array}, max_box_radius=5):
     '''for every box mapped as object_id : [bbox (XYXY)], return the cluster
     full_img should be H x W x 3'''
     assert full_img.shape[2] == 3
@@ -620,7 +620,7 @@ def segment_image_knn(full_img: np.array, object_boxes: {int: [int]}, object_ref
 
         # bounding box to segment
         subimg_lab = img_lab[bbox[1]: bbox[3], bbox[0]: bbox[2]]
-        mask = segment_subimg_knn(subimg_lab, ref_bg, object_references[object_id], image_normalization)
+        mask = segment_subimg_kmean(subimg_lab, ref_bg, object_references[object_id], image_normalization)
 
         obj_masks[object_id] = np.zeros((full_img.shape[0], full_img.shape[1]))
         obj_masks[object_id][bbox[1]: bbox[3], bbox[0]: bbox[2]] = mask

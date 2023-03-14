@@ -539,13 +539,13 @@ class Client:
 
     def eval_detections(self, gt_detections, pred_detections, object_id_mapping):
         '''evaluates detections and pushes the logs'''
+        # TODO: Combine eval functions
         self.logger.log_info('Evaluating detections.')
         pred_scores, missing_preds = eval_detections(gt_detections, pred_detections, object_id_mapping)
         self.stats_logger.push_log({'missing_preds' : missing_preds, **pred_scores}, append=False)
         return
 
     def eval_segmentation(self, gt_mask, pred_mask, object_id_mapping):
-        # TODO: function
         self.logger.log_info('Evaluating segmentation.')
         pred_scores, missing_preds = eval_segmentation(gt_mask, pred_mask, object_id_mapping)
         self.stats_logger.push_log({'missing_preds' : missing_preds, **pred_scores}, append=False)
@@ -593,7 +593,7 @@ class Client:
                 self.update_parallel_states(data)
 
                 if start: # start; no parallelization because tracker is not initialized
-                    # TODO: handle starts with parallel_run better
+                    # TODO: kill current parallel processes (if any)
                     self.k = 1
                     self.start_counter += 1
                     self.logger.log_info('Start of loop; initializing bounding box labels.')
@@ -604,7 +604,7 @@ class Client:
                     self.stats_logger.push_log({'num_preds' : len(pred)})
                     self._reinit_tracker(data, pred)
 
-                    self.stats_logger.push_log({'tracker': False})
+                    self.stats_logger.push_log({'tracker': False, 'start' : True})
 
                 elif self.check_detection_refresh(): # get new bounding box, parallelize if applicable
                     # TODO: do nothing, delay detection refresh instead of AssertError
@@ -683,7 +683,7 @@ class Client:
         with open(PARAMS['DATA_PICKLE_FILES'], 'rb') as f:
             all_server_fnames = pickle.load(f)
 
-        start_i = 0
+        # start_i = 0
         data_dir = PARAMS['DATA_DIR']
 
         for fname_batch in all_server_fnames:
@@ -695,15 +695,14 @@ class Client:
             assert len(fname_batch) == len(byte_files)
 
             for fname, byte_file in zip(fname_batch, byte_files):
-                self.logger.log_debug(f'Starting with fname {fname}')
                 # os.makedirs(f'{data_dir}/{fname}', exist_ok=True)
                 with open(f'{data_dir}/{fname}', 'wb') as f:
                     f.write(byte_file)
 
             self.logger.log_debug('Files received and written; starting loop')
-            self.start_loop(start_i = start_i)
+            self.start_loop(start_i = 0)
             # batch fname size fixed at 5
-            start_i += file_batch_size
+            # start_i += file_batch_size
 
             # remove the files
             self.logger.log_debug('Removing files')

@@ -107,7 +107,7 @@ class BoxTracker(Tracker):
         self._init_waiting_policy(waiting_policy)
         self._init_catchup_threads(mp_catchup, mp_threads, mp_objs_pthread)
 
-    def restart_tracker(self, frame : np.ndarray, detections : {int : (int)}, target_tracker : str = None):
+    def get_new_trackers(self, frame : np.ndarray, detections : {int : (int,)}):
         '''Creates trackers for a new set of Detections
         Detections in the format {id : box_xyxy}
         '''
@@ -116,12 +116,14 @@ class BoxTracker(Tracker):
             trackers[object_id] = init_tracker(self.tracker_type)
             trackers[object_id].init(frame, map_xyxy_to_xyhw(box))
 
-        if target_tracker is None:
-            self.trackers = trackers
-        elif target_tracker == 'mp':
-            self.mp_trackers = trackers
-        else:
-            raise NotImplementedError
+        return trackers
+
+    def restart_tracker(self, frame : np.ndarray, detections : {int : (int)}):
+        self.trackers = self.get_new_trackers(frame, detections)
+        if self.mp_catchup:
+            self.parallel_thread = None # TODO: cancel
+
+        self.reset_waiting_policy()
 
     def process_frame(self, frame, target_tracker : str = None) -> {int : (int)}:
         '''returns {object_id, new_bb_xyxy}'''
@@ -184,7 +186,7 @@ class BoxTracker(Tracker):
         self.logger.log_debug(f'Starting from {old_timestep}, processing {starting_length}')
         num_processed = 0
         # from _init_trackers()
-        self.restart_tracker(self.catchup_frames[0], old_detections, target_tracker='mp')
+        self.mp_trackers = self.get_new_trackers(self.catchup_frames[0], old_detections)
         curr_detections = old_detections  # do nothing with old detections
         starting_time = time.time()
         while num_processed < len(self.catchup_frames):  # catchup_frames is dynamic
@@ -208,7 +210,7 @@ class BoxTracker(Tracker):
         self.logger.log_debug('Launching catchup, multithreaded tracker')
         starting_length = len(self.catchup_frames)
         starting_time = time.time()
-        self.restart_tracker(self.catchup_frames[0], old_detections, target_tracker='mp')
+        self.mp_trackers = self.get_new_trackers(self.catchup_frames[0], old_detections)
         # spawn threads
         # objects to track, change this variable to become an empty list when all are being "tracked"
         objects_to_track = list(old_detections.keys())
@@ -291,12 +293,12 @@ class MaskTracker(Tracker):
 
     def restart_tracker(self, frame, mask : {int : np.array}):
         self.current_mask = mask
-        self.object_references = get_knn_references(mask, frame)
+        self.object_references = get_kmean_references(mask, frame)
         self.box_tracker.restart_tracker(frame, self.get_boxes(mask))
 
     def process_frame(self, frame):
         new_boxes = cast_bbox_to_int(self.box_tracker.process_frame(frame))
-        self.current_mask = segment_image_knn(frame, new_boxes, self.object_references)
+        self.current_mask = segment_image_kmeans(frame, new_boxes, self.object_references)
         return self.current_mask
 
     def init_multiprocessing(self):
@@ -313,7 +315,7 @@ class MaskTracker(Tracker):
         # TODO: fix old_frame technique
         return_stats = self.box_tracker.execute_catchup(old_timestep, self.get_boxes(old_mask))
         # rebuild old reference after executing catchup
-        self.object_references = get_knn_references(old_mask, self.old_frame)
+        self.object_references = get_kmean_references(old_mask, self.old_frame)
         return return_stats
 
     def reset_mp(self):
@@ -326,7 +328,7 @@ class BoxMaskTracker(Tracker):
                  waiting_policy = PARAMS['WAITING_POLICY']):
         self.segmenter = segmenter
         if segmenter == 'knn': # nearest neighbor clustering
-            self.segment_image = segment_image_knn
+            self.segment_image = segment_image_kmeans
         elif segmenter == 'mrf': # markov random fields
             self.segment_image = segment_image_mrf
         else:
@@ -341,7 +343,7 @@ class BoxMaskTracker(Tracker):
         boxes = self.box_tracker.process_frame(frame)
 
         if self.segmenter == 'knn':
-            self.current_processed_masks = segment_image_knn(frame, cast_bbox_to_int(boxes), self.object_references)
+            self.current_processed_masks = segment_image_kmeans(frame, cast_bbox_to_int(boxes), self.object_references)
             return boxes
 
         raise NotImplementedError(f'Segmenter not implemented : {self.segmenter}')
@@ -351,7 +353,7 @@ class BoxMaskTracker(Tracker):
         if self.segmenter == 'knn':
             self.object_references = get_midbox_references(cast_bbox_to_int(pred_boxes), frame)
         self.box_tracker.restart_tracker(frame, pred_boxes)
-        self.current_processed_masks = segment_image_knn(frame, cast_bbox_to_int(pred_boxes), self.object_references)
+        self.current_processed_masks = segment_image_kmeans(frame, cast_bbox_to_int(pred_boxes), self.object_references)
 
     def init_multiprocessing(self):
         self.old_frame = None
