@@ -107,29 +107,35 @@ class Dataset:
     #
     #             yield byte_encoding, (frames_size, encoding_size), full_fname
 
-    def get_virat_dataset(self, col_names=VIRAT_COLS, class_mapping = VIRAT_COCO_MAP):
+    def get_virat_dataset(self, col_names=VIRAT_COLS, class_mapping = VIRAT_COCO_MAP, frame_limit = PARAMS['FRAME_LIMIT']):
         videos_dir = f'{self.data_dir}/VIRAT/videos'
         annotations_dir = f'{self.data_dir}/VIRAT/annotations'
-        fnames = [fname for fname in os.listdir(videos_dir) if
-                  '.mp4' in fname]  # remove .DS_Store and other misc files
+        fnames = sorted([fname for fname in os.listdir(videos_dir) if
+                  '.mp4' in fname])  # remove .DS_Store and other misc files
 
         time_per_frame = 1 / self.simulated_fps
 
         for fname in fnames:
             video_fname = f'{videos_dir}/{fname}'
             annotation_fname = f'{annotations_dir}/{fname[:-4]}.viratdata.objects.txt'  # fix type
-            annotation_df = pd.read_csv(annotation_fname, delimiter=' ', header=None, names=col_names)
+            if not os.path.isfile(annotation_fname):
+                continue
+
+            try:
+                annotation_df = pd.read_csv(annotation_fname, delimiter=' ', header=None, names=col_names)
+                annotation_df = annotation_df.loc[annotation_df['class_name'] != 0]
+            except pd.errors.ParserError:
+                print(f'Parsing error on file {annotation_fname}')
+                continue
+
             cap = cv2.VideoCapture(video_fname)
-            success, frames = extract_frames(cap, vid_shape=None)
+            success, frames = extract_frames(cap, vid_shape=None, frame_limit=frame_limit)
             if not success:
                 continue
             time_since_previous_frame = time.time()
             for i in range(frames.shape[0]):
                 frame = frames[i, ...]
-                while time.time() - time_since_previous_frame < time_per_frame:
-                    time.sleep(0.005)
 
-                time_since_previous_frame = time.time()
                 df_slice = annotation_df.loc[annotation_df['frame_num'] == i]
 
                 object_ids = list(df_slice['object_id'])
@@ -144,6 +150,11 @@ class Dataset:
                 y1s = [y0s[k] + hs[k] for k in range(len(y0s))]
 
                 bb_list = list(zip(x0s, y0s, x1s, y1s))
+
+                while time.time() - time_since_previous_frame < time_per_frame:
+                    time.sleep(0.005)
+
+                time_since_previous_frame = time.time()
 
                 yield frame, frame.nbytes, (classes_id, object_ids), bb_list, video_fname, i == 0
 
@@ -203,10 +214,6 @@ class Dataset:
                 time_since_previous_frame = time.time()
                 for shape in SHAPES_TO_TEST:
                     for j, fname in enumerate(frames):
-                        while time.time() - time_since_previous_frame < time_per_frame:
-                            time.sleep(0.005)
-
-                        time_since_previous_frame = time.time()
 
                         img = Image.open(fname)
                         if shape is None:
@@ -230,6 +237,11 @@ class Dataset:
 
                         bb_list = list(zip(x0s, y0s, x1s, y1s))
 
+                        while time.time() - time_since_previous_frame < time_per_frame:
+                            time.sleep(0.005)
+
+                        time_since_previous_frame = time.time()
+
                         yield img, sys.getsizeof(img), (classes_id, object_ids), bb_list, fname, j == 0
 
                 break
@@ -252,10 +264,6 @@ class Dataset:
             label_df = pd.read_csv(video_labels[i], delimiter=' ', header=None, names=col_names)
             time_since_previous_frame = time.time()
             for j, fname in enumerate(frames):
-                while time.time() - time_since_previous_frame < time_per_frame:
-                    time.sleep(0.005)
-
-                time_since_previous_frame = time.time()
 
                 img = Image.open(fname)
                 if shape is None:
@@ -278,6 +286,11 @@ class Dataset:
                 y1s = list(df_slice['y1'])
 
                 bb_list = list(zip(x0s, y0s, x1s, y1s))
+
+                while time.time() - time_since_previous_frame < time_per_frame:
+                    time.sleep(0.005)
+
+                time_since_previous_frame = time.time()
 
                 yield img, sys.getsizeof(img), (classes_id, object_ids), bb_list, fname, j == 0
 
@@ -306,11 +319,6 @@ class Dataset:
 
             time_since_previous_frame = time.time()
             for i in range(len(video_frames)):
-                while time.time() - time_since_previous_frame < time_per_frame:
-                    time.sleep(0.005)
-
-                time_since_previous_frame = time.time()
-
                 vid_frame = Image.open(video_frames[i])
                 mask_frame = Image.open(mask_frames[i])
                 if shape is None:
@@ -325,6 +333,11 @@ class Dataset:
                 obj_ids = np.unique(mask_frame)
                 # mask_ids = np.zeros_like(mask_frame)
 
+                while time.time() - time_since_previous_frame < time_per_frame:
+                    time.sleep(0.005)
+
+                time_since_previous_frame = time.time()
+
                 yield vid_frame, sys.getsizeof(vid_frame), (obj_classes, obj_ids), mask_frame, video_frames[i], i==0
 
             break
@@ -332,6 +345,8 @@ class Dataset:
     def get_mots_dataset(self, shape=PARAMS['VIDEO_SHAPE'], frame_limit = PARAMS['FRAME_LIMIT']):
         data_dir = f'{self.data_dir}/MOT/MOTS'
         video_cats = sorted([x for x in os.listdir(f'{data_dir}/train') if x != '.DS_Store']) # prune ds_store
+
+        time_per_frame = 1 / self.simulated_fps
 
         for video_cat in video_cats:
             cat_dir = f'{data_dir}/train/{video_cat}'
@@ -352,6 +367,8 @@ class Dataset:
 
             num_vids = min(1, num_frames // frame_limit) # if 1, just do all the frames
 
+            time_since_previous_frame = time.time()
+
             for vid_partition in range(num_vids):
                 for i in range(frame_limit):
                     actual_i = vid_partition * frame_limit + i
@@ -363,6 +380,12 @@ class Dataset:
 
                     mask = combine_binary_masks(decode_masks_from_df(df_timestep, w_vid, h_vid))
                     class_info = ((0, *(df_timestep[2] - 1),), (0, *df_timestep[1],))
+
+                    while time.time() - time_since_previous_frame < time_per_frame:
+                        time.sleep(0.005)
+
+                    time_since_previous_frame = time.time()
+
                     yield frame, frame.nbytes, class_info, mask, img_fnames[actual_i], i==0
 
     def get_mots_dataset_as_boxes(self):
