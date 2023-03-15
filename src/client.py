@@ -393,7 +393,9 @@ class Client:
 
         # remove the unnecessary boxes (don't bother tracking them)
         add_clause = lambda object_id: object_id in object_id_mapping
-        detections, _ = remove_classes_from_pred(detections_with_classes, add_clause=add_clause)
+        return_clause = lambda _d: len(_d) > self.tracking_box_limit
+        detections, _ = remove_classes_from_pred(detections_with_classes, add_clause=add_clause,
+                                                 return_clause=return_clause)
 
         self.logger.log_debug(f'Detections made: {len(detections)}, with mapping {object_id_mapping}.')
 
@@ -509,12 +511,14 @@ class Client:
                         elif self.parallel_state == 2:
                             self.logger.log_debug('Catchup marked as completed; retrieving information.')
                             if self.parallel_thread.exception():
+                                self.logger.log_error('Catchup failed for some reason; quitting')
+                                traceback.print_exc()
                                 err = self.parallel_thread.exception()
-                                raise err(f'Catchup thread errored for some reason: {str(err)}')
+                                raise err
                             self.logger.log_debug('Successfully received catchup information.')
+                            self.handle_catchup_result()
                             self.parallel_state = 0
                             self.parallel_thread = None
-                            self.tracker.reset_mp()
 
                             return
 
@@ -527,6 +531,7 @@ class Client:
         return None
 
     def close_mp(self):
+        self.logger.log_info('Closing the other threads')
         if self.parallel_run:
             if self.parallel_state == 0: # idle
                 return
@@ -534,6 +539,7 @@ class Client:
                 assert self.parallel_thread is not None
                 self.parallel_thread.cancel()
                 self.parallel_state = 0
+                self.tracker.close_mp()
 
         return
 
@@ -541,14 +547,16 @@ class Client:
         '''evaluates detections and pushes the logs'''
         # TODO: Combine eval functions
         self.logger.log_info('Evaluating detections.')
+        time_to_eval = time.time()
         pred_scores, missing_preds = eval_detections(gt_detections, pred_detections, object_id_mapping)
-        self.stats_logger.push_log({'missing_preds' : missing_preds, **pred_scores}, append=False)
+        self.stats_logger.push_log({'missing_preds' : missing_preds, 'time_to_eval': time.time() - time_to_eval, **pred_scores}, append=False)
         return
 
     def eval_segmentation(self, gt_mask, pred_mask, object_id_mapping):
         self.logger.log_info('Evaluating segmentation.')
+        time_to_eval = time.time()
         pred_scores, missing_preds = eval_segmentation(gt_mask, pred_mask, object_id_mapping)
-        self.stats_logger.push_log({'missing_preds' : missing_preds, **pred_scores}, append=False)
+        self.stats_logger.push_log({'missing_preds' : missing_preds, 'time_to_eval': time.time() - time_to_eval, **pred_scores}, append=False)
 
     def _reset_state_on_launch(self, data):
         '''state update for post-function of launching parallel detection'''
@@ -587,7 +595,7 @@ class Client:
                 if self.run_type == 'BB':
                     self.logger.log_debug(f'num gt_detections : {len(gt_as_pred)}')
                 elif self.run_type == 'SM' or self.run_type == 'BBSM':
-                    self.logger.log_debug(f'Got gt mask; type {type(gt_preds)}')
+                    self.logger.log_debug(f'Got gt mask; type {type(gt_preds)} with len {len(gt_preds)}')
 
                 # first check if the parallel detection process has completed
                 self.update_parallel_states(data)
@@ -597,7 +605,7 @@ class Client:
 
                     self.k = 1
                     self.start_counter += 1
-                    self.logger.log_info('Start of loop; initializing bounding box labels.')
+                    self.logger.log_info(f'Start of loop ({fname}); initializing bounding box labels.')
 
                     pred, self.object_gt_mapping = self.get_pred(data, class_info, gt, d,
                                                                  end_of_previous_iteration,

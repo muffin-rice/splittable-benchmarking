@@ -59,25 +59,30 @@ class Tracker:
 
     @abstractmethod
     def reset_mp(self):
-        '''step executed after client re-syncs catchup information'''
+        '''step executed after client re-syncs catchup information; should be in-thread'''
+        pass
+
+    @abstractmethod
+    def close_mp(self):
+        '''step executed upon start of a new video; kill all parallel threads, etc.'''
         pass
 
 class BoxTracker(Tracker):
     '''Tracker uses format xyhw – change bbox inputs and outputs'''
     def check_addframe_constant(self, nframes : int = PARAMS['WAITING_CONSTANT_N']):
         self.waiting_iteration += 1
-        if self.waiting_iteration == nframes:
+        if self.waiting_iteration % nframes == 0:
             self.waiting_iteration = 0
             return True
         return False
 
     def reset_waiting_policy_constant(self):
-        self.waiting_iteration = 0
+        self.waiting_iteration = -1
 
     def _init_waiting_policy(self, waiting_policy):
         if waiting_policy == 'CONSTANT':
             self.logger.log_info(f'Setting up constant waiting policy with addframe at {PARAMS["WAITING_CONSTANT_N"]}')
-            self.waiting_iteration = 0
+            self.waiting_iteration = -1
             self.check_addframe = self.check_addframe_constant
             self.reset_waiting_policy = self.reset_waiting_policy_constant
         elif waiting_policy is None:
@@ -88,11 +93,11 @@ class BoxTracker(Tracker):
 
     def _init_catchup_threads(self, flag, num_threads, min_objects):
         self.mp_catchup = flag
-        if not flag:
+        if not self.mp_catchup:
             return
 
         self.parallel_executor = ThreadPoolExecutor(max_workers=num_threads)
-        self.parallel_thread = None
+        self.parallel_threads = [None]
         self.max_threads = num_threads
         self.min_objects = min_objects
 
@@ -121,8 +126,9 @@ class BoxTracker(Tracker):
     def restart_tracker(self, frame : np.ndarray, detections : {int : (int)}):
         self.trackers = self.get_new_trackers(frame, detections)
         if self.mp_catchup:
-            self.parallel_thread = None # TODO: cancel
-
+            for thread in self.parallel_threads:
+                if thread is not None:
+                    thread.cancel()
         self.reset_waiting_policy()
 
     def process_frame(self, frame, target_tracker : str = None) -> {int : (int)}:
@@ -176,8 +182,19 @@ class BoxTracker(Tracker):
     @abstractmethod
     def reset_mp(self):
         self.catchup_frames = []
+        self.trackers = self.mp_trackers
         self.mp_trackers = {}
         self.reset_waiting_policy()
+
+    @abstractmethod
+    def close_mp(self):
+        self.catchup_frames = []
+        self.mp_trackers = {}
+        self.reset_waiting_policy()
+        if self.mp_catchup:
+            for thread in self.parallel_threads:
+                if thread is not None:
+                    thread.cancel()
 
     def execute_catchup_with_objects(self, old_timestep, old_detections, objects_to_track : {int}):
         '''executes catchup with select object ids (select trackers)'''
@@ -203,7 +220,7 @@ class BoxTracker(Tracker):
 
     def execute_catchup_mp(self, old_timestep, old_detections):
         '''for when the catchup should be multithreaded'''
-        if len(old_detections) < self.min_objects:
+        if len(old_detections) <= self.min_objects:
             self.logger.log_info(f'{len(old_detections)} detections less than {self.min_objects}; doing single threaded')
             return self.execute_catchup_with_objects(old_timestep, old_detections, set(self.trackers.keys()))
 
@@ -219,7 +236,7 @@ class BoxTracker(Tracker):
         if len(old_detections) > self.max_threads * self.min_objects:
             objects_per_thread = len(old_detections) // self.max_threads
             remaining_objects = objects_per_thread + len(old_detections) % self.max_threads
-            self.logger.log_debug(f'Threads are tracking {objects_per_thread} objects')
+            self.logger.log_debug(f'Threads are tracking {objects_per_thread} objects each')
 
             # submitting threads
             threads.append(self.parallel_executor.submit(self.execute_catchup_with_objects, old_timestep,
@@ -228,7 +245,7 @@ class BoxTracker(Tracker):
             for i in range(self.max_threads - 1):
                 threads.append(self.parallel_executor.submit(self.execute_catchup_with_objects, old_timestep,
                                                              old_detections, objects_to_track[:objects_per_thread]))
-                objects_to_track = objects_to_track[objects_per_thread]
+                objects_to_track = objects_to_track[objects_per_thread:]
 
         else:
             while len(objects_to_track) > self.min_objects:
@@ -240,6 +257,8 @@ class BoxTracker(Tracker):
                     threads.append(self.parallel_executor.submit(self.execute_catchup_with_objects, old_timestep,
                                                                  old_detections, objects_to_track))
                     objects_to_track = []
+
+        self.parallel_threads = threads
 
         num_threads = len(threads)
 
@@ -267,6 +286,8 @@ class BoxTracker(Tracker):
                     break # break out of for loop, back to while loop
             else:
                 break # break out of while loop, every thread is done
+
+        self.parallel_threads = [None]
 
         return {'process_time': time.time() - starting_time,
                 'added_frames': len(self.catchup_frames) - starting_length,
@@ -303,6 +324,7 @@ class MaskTracker(Tracker):
 
     def init_multiprocessing(self):
         self.old_frame = None
+        self.old_object_references = None
         self.box_tracker.init_multiprocessing()
 
     def waiting_step(self, frame):  # step executed to prepare for the new data
@@ -321,6 +343,10 @@ class MaskTracker(Tracker):
     def reset_mp(self):
         self.old_frame = None
         self.box_tracker.reset_mp()
+
+    def close_mp(self):
+        self.old_frame = None
+        self.box_tracker.close_mp()
 
 class BoxMaskTracker(Tracker):
     '''tracker that takes as input boxes but outputs masks in the process_frame code'''
@@ -367,7 +393,9 @@ class BoxMaskTracker(Tracker):
     def execute_catchup(self, old_timestep, old_outputs) -> {}:
         return_info = self.box_tracker.execute_catchup(old_timestep, old_outputs)
         if self.segmenter == 'knn':
-            self.object_references = get_midbox_references(cast_bbox_to_int(old_outputs), self.old_frame)
+            self.old_object_references = get_midbox_references(cast_bbox_to_int(old_outputs), self.old_frame)
+
+        self.logger.log_debug(f'Reassigned object_references: {self.object_references.keys()}')
         return return_info
 
     def get_masks(self):
@@ -376,3 +404,10 @@ class BoxMaskTracker(Tracker):
     def reset_mp(self):
         self.old_frame = None
         self.box_tracker.reset_mp()
+        self.object_references = self.old_object_references
+        self.old_object_references = None
+
+    def close_mp(self):
+        self.old_frame = None
+        self.old_object_references = None
+        self.box_tracker.close_mp()
