@@ -334,7 +334,7 @@ def remove_classes_from_pred(preds_with_classes : {int : {}}, add_clause = None,
                 detections[object_id] = pred
 
             if return_clause(detections):
-                return detections
+                return detections, object_id_mapping
 
 
     return detections, object_id_mapping
@@ -343,7 +343,7 @@ def remove_classes_from_pred(preds_with_classes : {int : {}}, add_clause = None,
 def separate_objects_in_mask(mask, num_objects, starting_id=1, num_iters=10) -> {int: np.array}:
     '''given a binary mask cluster the objects given the numobjects
     returns random id : mask'''
-    assert len(np.unique(mask)) == 2, f'Mask is not binary: {mask}, {np.unique(mask)}'
+    assert mask.dtype == bool, f'dtype of binary mask incorrect: {mask.dtype}'
     if num_objects == 1:
         return {starting_id: mask}
 
@@ -477,14 +477,14 @@ def get_bbox_from_mask(binary_mask : np.array) -> [int]:
     '''given a 2D 0/1 binary input mask, output the xyxy bounding box'''
 
     assert len(binary_mask.shape) == 2, 'dimensions of binary mask are incorrect'
-    assert tuple(np.unique(binary_mask)) == (0,1)
+    assert binary_mask.dtype == bool, f'dtype of binary mask incorrect: {binary_mask.dtype}'
 
-    indices = np.where(binary_mask == 1)
+    rows, cols = np.any(binary_mask, axis=1), np.any(binary_mask, axis=0)
 
-    x_min, x_max = indices[0].min(), indices[0].max()
-    y_min, y_max = indices[1].min(), indices[1].max()
+    y_min, y_max = np.where(rows)[0][[0, -1]]
+    x_min, x_max = np.where(cols)[0][[0, -1]]
 
-    return [y_min, x_min, y_max, x_max]
+    return [x_min, y_min, x_max, y_max]
 
 def binarize_mask(mask : np.array) -> np.array:
     binary_mask = np.zeros_like(mask, dtype=bool)
@@ -510,7 +510,7 @@ def combine_binary_masks(object_masks : {int : np.array}) -> np.array:
 
 def eval_segmentation(gt_masks : {int : np.array}, pred_masks : {int : np.array}, object_id_mapping : {int : int}):
     '''evals in the format of class_id : score'''
-    format_lambda = lambda object_id: f'p_d_{object_id}'
+    format_lambda = lambda object_id: f'p_s_{object_id}'
     return eval_predictions(gt_masks, pred_masks, object_id_mapping, calculate_mask_iou, format_lambda)
 
 def eval_segmentation_diffmasks(gt_masks : {int : np.array}):
@@ -573,7 +573,7 @@ def get_midbox_references(bboxes : {int : (int,)}, full_img : np.array, box_radi
     box_references = {}
     img_lab = rgb2lab(full_img)
     for object_id, bbox in bboxes.items():
-        if (bbox[2] - bbox[0] < 10) or (bbox[3] - bbox[1] < 10):
+        if (bbox[2] - bbox[0] < box_radius*2) or (bbox[3] - bbox[1] < box_radius*2):
             print(f'bbox too small: {full_img}')
             continue
 
@@ -586,7 +586,7 @@ def get_midbox_references(bboxes : {int : (int,)}, full_img : np.array, box_radi
 
     return box_references
 
-def segment_subimg_kmean(subimg, bg_ref, object_ref, norm=1) -> np.array:
+def segment_subimg_kmeans(subimg, bg_ref, object_ref, norm=1) -> np.array:
     '''segments a bounding box with a given subimg and a background reference'''
     bg_dists = (subimg - bg_ref) ** 2 / norm
     ref_dists = (subimg - object_ref) ** 2 / norm
@@ -604,23 +604,27 @@ def segment_image_kmeans(full_img: np.array, object_boxes: {int: [int]}, object_
     # assume the edges of the image are the background and use as reference
     # TODO: make the background the actual background
 
-    background_mask = np.zeros_like(img_lab, dtype=bool)
-    background_mask[:5] = 1
-    background_mask[-5:] = 1
+    background_mask = np.zeros((img_lab.shape[0], img_lab.shape[1]), dtype=bool)
+    background_mask[:5, :] = 1
+    background_mask[-5:, :] = 1
     background_mask[:, -5:] = 1
     background_mask[:, :5] = 1
 
-    ref_bg = img_lab[background_mask].reshape(-1, 3).mean(axis=0)
+    ref_bg = img_lab[background_mask].mean(axis=0)
 
     obj_masks = {}
 
     for object_id, bbox in object_boxes.items():
-        if bbox[2] - bbox[0] < max_box_radius or bbox[3] - bbox[1] < max_box_radius:
+        if bbox[2] - bbox[0] < max_box_radius * 2 or bbox[3] - bbox[1] < max_box_radius * 2:
+            continue
+
+        if object_id not in object_references:
+            print(f'{object_id} with bbox {bbox} does not have a reference')
             continue
 
         # bounding box to segment
         subimg_lab = img_lab[bbox[1]: bbox[3], bbox[0]: bbox[2]]
-        mask = segment_subimg_kmean(subimg_lab, ref_bg, object_references[object_id], image_normalization)
+        mask = segment_subimg_kmeans(subimg_lab, ref_bg, object_references[object_id], image_normalization)
 
         obj_masks[object_id] = np.zeros((full_img.shape[0], full_img.shape[1]))
         obj_masks[object_id][bbox[1]: bbox[3], bbox[0]: bbox[2]] = mask
