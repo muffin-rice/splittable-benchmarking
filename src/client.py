@@ -533,15 +533,13 @@ class Client:
     def close_mp(self):
         self.logger.log_info('Closing the other threads')
         if self.parallel_run:
-            if self.parallel_state == 0: # idle
-                return
-            else:
+            if self.parallel_state != 0: # idle
                 assert self.parallel_thread is not None
                 self.parallel_thread.cancel()
-                self.parallel_state = 0
-                self.tracker.close_mp()
 
-        return
+            self.tracker.close_mp()
+            self.parallel_state = 0
+            self.parallel_thread = None
 
     def eval_detections(self, gt_detections, pred_detections, object_id_mapping):
         '''evaluates detections and pushes the logs'''
@@ -589,6 +587,9 @@ class Client:
                 data, size_orig, class_info, gt, fname, start = d
                 self.stats_logger.push_log({'iter' : i, 'fname' : fname})
 
+                if start:
+                    self.close_mp() # should be done at "end" but do it here
+
                 # get the gt detections in {object : info} for eval
                 gt_preds = self.get_gt(class_info, gt) # class : {object : info}
                 gt_as_pred = self.get_gt_as_pred(class_info, gt) # {object : info}
@@ -601,8 +602,6 @@ class Client:
                 self.update_parallel_states(data)
 
                 if start: # start; no parallelization because tracker is not initialized
-                    self.close_mp()
-
                     self.k = 1
                     self.start_counter += 1
                     self.logger.log_info(f'Start of loop ({fname}); initializing bounding box labels.')
