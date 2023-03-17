@@ -792,3 +792,17 @@ def wait_for_threads(threads, time_per_wait = 0.01):
         thread_returns.append(thread.result())
 
     return thread_returns
+
+def process_objects_in_tracker(trackers, frame, objects_to_track : {int}) -> {int : (int,)}:
+    '''returns {object_id, new_bb_xyxy}
+    will update trackers in-place, returns updated boxes'''
+    updated_boxes = {}
+    for object_id, tracker in trackers.items():
+        if object_id not in objects_to_track:
+            continue
+        success, bbox_xyhw = tracker.update(frame)
+
+        if success:
+            updated_boxes[object_id] = map_xyhw_to_xyxy(bbox_xyhw)
+
+    return updated_boxes

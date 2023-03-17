@@ -131,30 +131,11 @@ class BoxTracker(Tracker):
                     thread.cancel()
         self.reset_waiting_policy()
 
-    def process_frame(self, frame) -> {int : (int)}:
+    def process_frame(self, frame) -> {int : (int,)}:
         '''returns {object_id, new_bb_xyxy}'''
         updated_boxes = {}
+
         for object_id, tracker in self.trackers.items():
-            success, bbox_xyhw = tracker.update(frame)
-
-            if success:
-                updated_boxes[object_id] = map_xyhw_to_xyxy(bbox_xyhw)
-
-        return updated_boxes
-
-    def process_frame_with_objects(self, frame, objects_to_track : {int}, target_tracker : str = None) -> {int : (int)}:
-        '''returns {object_id, new_bb_xyxy}'''
-        if target_tracker is None:
-            trackers = self.trackers
-        elif target_tracker == 'mp':
-            trackers = self.mp_trackers
-        else:
-            raise NotImplementedError
-
-        updated_boxes = {}
-        for object_id, tracker in trackers.items():
-            if object_id not in objects_to_track:
-                continue
             success, bbox_xyhw = tracker.update(frame)
 
             if success:
@@ -194,16 +175,15 @@ class BoxTracker(Tracker):
         starting_length = len(self.catchup_frames)
         self.logger.log_debug(f'Starting from {old_timestep}, processing {starting_length}')
         num_processed = 0
-        # from _init_trackers()
-        self.mp_trackers = self.get_new_trackers(self.catchup_frames[0], old_detections)
+
         curr_detections = old_detections  # do nothing with old detections
         starting_time = time.time()
         while num_processed < len(self.catchup_frames):  # catchup_frames is dynamic
             if num_processed > PARAMS['CATCHUP_LIMIT']:
                 raise AssertionError(f'Catchup taking too many iterations: {len(self.catchup_frames)}')
 
-            curr_detections = self.process_frame_with_objects(self.catchup_frames[num_processed], target_tracker='mp',
-                                                              objects_to_track=objects_to_track)
+            curr_detections = process_objects_in_tracker(self.mp_trackers, self.catchup_frames[num_processed],
+                                                         objects_to_track=objects_to_track)
             self.logger.log_debug(f'Processed frame {num_processed}')
             num_processed += 1
 
@@ -220,7 +200,6 @@ class BoxTracker(Tracker):
         self.logger.log_debug('Launching catchup, multithreaded tracker')
         starting_length = len(self.catchup_frames)
         starting_time = time.time()
-        self.mp_trackers = self.get_new_trackers(self.catchup_frames[0], old_detections)
         # spawn threads
         # objects to track, change this variable to become an empty list when all are being "tracked"
         objects_to_track = list(old_detections.keys())
@@ -254,6 +233,7 @@ class BoxTracker(Tracker):
 
     def execute_catchup(self, old_timestep, old_detections):
         '''executes catchup; '''
+        self.mp_trackers = self.get_new_trackers(self.catchup_frames[0], old_detections)
         if self.mp_catchup:
             return self.execute_catchup_mp(old_timestep, old_detections)
         else:
