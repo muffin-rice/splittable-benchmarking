@@ -131,18 +131,10 @@ class BoxTracker(Tracker):
                     thread.cancel()
         self.reset_waiting_policy()
 
-    def process_frame(self, frame, target_tracker : str = None) -> {int : (int)}:
+    def process_frame(self, frame) -> {int : (int)}:
         '''returns {object_id, new_bb_xyxy}'''
-
-        if target_tracker is None:
-            trackers = self.trackers
-        elif target_tracker == 'mp':
-            trackers = self.mp_trackers
-        else:
-            raise NotImplementedError
-
         updated_boxes = {}
-        for object_id, tracker in trackers.items():
+        for object_id, tracker in self.trackers.items():
             success, bbox_xyhw = tracker.update(frame)
 
             if success:
@@ -197,7 +189,7 @@ class BoxTracker(Tracker):
                     thread.cancel()
 
     def execute_catchup_with_objects(self, old_timestep, old_detections, objects_to_track : {int}):
-        '''executes catchup with select object ids (select trackers)'''
+        '''executes catchup with select object ids (select trackers); singlethreaded only'''
         stats_to_return = {}
         starting_length = len(self.catchup_frames)
         self.logger.log_debug(f'Starting from {old_timestep}, processing {starting_length}')
@@ -219,7 +211,8 @@ class BoxTracker(Tracker):
                 'added_frames': len(self.catchup_frames) - starting_length}
 
     def execute_catchup_mp(self, old_timestep, old_detections):
-        '''for when the catchup should be multithreaded'''
+        '''for when the catchup should be multithreaded
+        launches many self.execute_catchup_with_objects'''
         if len(old_detections) <= self.min_objects:
             self.logger.log_info(f'{len(old_detections)} detections less than {self.min_objects}; doing single threaded')
             return self.execute_catchup_with_objects(old_timestep, old_detections, set(self.trackers.keys()))
