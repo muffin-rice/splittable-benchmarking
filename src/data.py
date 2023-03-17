@@ -350,6 +350,8 @@ class Dataset:
 
         for video_cat in video_cats:
             cat_dir = f'{data_dir}/train/{video_cat}'
+            if not os.path.isfile(f'{cat_dir}/gt/gt.txt'):
+                continue
             df = pd.read_csv(f'{cat_dir}/gt/gt.txt', sep=' ', header=None)
             num_frames = df[0].max()
 
