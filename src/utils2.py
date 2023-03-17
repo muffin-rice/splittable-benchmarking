@@ -340,44 +340,56 @@ def remove_classes_from_pred(preds_with_classes : {int : {}}, add_clause = None,
     return detections, object_id_mapping
 
 
-def separate_objects_in_mask(mask, num_objects, starting_id=1, num_iters=10) -> {int: np.array}:
+def separate_objects_in_mask(mask, num_objects, starting_id=1, max_iters=10, num_trials = 10) -> {int: np.array}:
     '''given a binary mask cluster the objects given the numobjects
     returns random id : mask'''
     assert mask.dtype == bool, f'dtype of binary mask incorrect: {mask.dtype}'
     if num_objects == 1:
         return {starting_id: mask}
 
-    mask_indices = np.array(tuple(x for x in zip(*np.where(mask))))
-    start_inds = np.random.choice(np.arange(mask_indices.shape[0]), num_objects, replace=False)
-    cluster_starts = mask_indices[start_inds]  # num_objects x 2
-    index_mask = np.indices((mask.shape[0], mask.shape[1])).transpose(1, 2, 0)
+    mask_indices = np.argwhere(mask)
+    final_distances = []
+    all_cluster_mins = []
 
-    assert num_iters > 1
+    assert num_trials >= 1 and max_iters > 1
 
-    for i in range(num_iters):
-        mask_distances = np.zeros((num_objects, mask.shape[0], mask.shape[1]))
-        for j, cluster in enumerate(cluster_starts):
-            mask_distance = index_mask - cluster[np.newaxis, np.newaxis, :]
-            mask_distance = np.sqrt(mask_distance[:, :, 0] ** 2 + mask_distance[:, :, 1] ** 2)
-            mask_distances[j, :, :] = mask_distance
+    for i in range(num_trials):
+        start_inds = np.random.choice(np.arange(mask_indices.shape[0]), num_objects, replace=False)
+        cluster_starts = mask_indices[start_inds]  # num_objects x 2
+        index_mask = np.indices((mask.shape[0], mask.shape[1])).transpose(1, 2, 0) # H x W x 2
+        old_mins = None
 
-        # cluster mins is H x W array of the argmin
-        cluster_mins = np.argmin(mask_distances, axis=0) + 1
-        cluster_mins[~mask] = 0
+        while True:
+            temp = index_mask[np.newaxis, :, :, :] - cluster_starts[:, np.newaxis, np.newaxis, :]
+            mask_distances = np.sqrt(temp[:,:,:,0] ** 2 + temp[:,:,:,1] ** 2) # N x H x W
 
-        # find the average of the centroids
+            cluster_mins = np.argmin(mask_distances, axis=0) + 1 # 1-index the clusters
+            cluster_mins[~mask] = 0
+
+            if (cluster_mins == old_mins).all() or i == max_iters:
+                break
+
+            # find the average of the centroids
+            for j in range(cluster_starts.shape[0]):
+                cluster_mask = (cluster_mins == j + 1)
+                assert cluster_mask.sum()
+
+                curr_cluster = index_mask[cluster_mask]  # n x 2 (indices, n is the number of 1s in the cluster_mask)
+
+                cluster_starts[j, :] = curr_cluster.mean(axis=0)
+
+            i += 1
+            old_mins = cluster_mins.copy()
+
+        all_cluster_mins.append(cluster_mins)
+        final_distances.append(0)
         for j in range(cluster_starts.shape[0]):
-            cluster_mask = (cluster_mins == j + 1)
-            if cluster_mask.sum == 0:
-                # randomize another start
-                cluster_starts[j, :] = np.random.choice(mask_indices)
-                continue
+            final_distances[-1] += mask_distances[j,:,:][cluster_mins == j+1].mean()
 
-            curr_cluster = index_mask[cluster_mask]  # n x 2 (indices, n is the number of 1s in the cluster_mask)
 
-            cluster_starts[j, :] = np.mean(curr_cluster, axis=0)
+    best_cluster_mins = all_cluster_mins[np.array(final_distances).argmin()]
 
-    return {starting_id + i: cluster_mins == i + 1 for i in range(num_objects)}
+    return {starting_id + i: best_cluster_mins == i + 1 for i in range(num_objects)}
 
 
 def map_mask_ids(pred_mask_allclasses : {int : np.array}, gt_mask_classes : {int : {int : np.array}}):
