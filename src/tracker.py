@@ -233,30 +233,12 @@ class BoxTracker(Tracker):
         objects_to_track = list(old_detections.keys())
         # no need to randomize objects_to_track
         threads = []
-        if len(old_detections) > self.max_threads * self.min_objects:
-            objects_per_thread = len(old_detections) // self.max_threads
-            remaining_objects = objects_per_thread + len(old_detections) % self.max_threads
-            self.logger.log_debug(f'Threads are tracking {objects_per_thread} objects each')
 
-            # submitting threads
+        threads_with_objects = partition_objects_into_threads(objects_to_track, self.max_threads, self.min_objects)
+
+        for thread_objects in threads_with_objects:
             threads.append(self.parallel_executor.submit(self.execute_catchup_with_objects, old_timestep,
-                                                         old_detections, objects_to_track[:remaining_objects]))
-            objects_to_track = objects_to_track[remaining_objects:]
-            for i in range(self.max_threads - 1):
-                threads.append(self.parallel_executor.submit(self.execute_catchup_with_objects, old_timestep,
-                                                             old_detections, objects_to_track[:objects_per_thread]))
-                objects_to_track = objects_to_track[objects_per_thread:]
-
-        else:
-            while len(objects_to_track) > self.min_objects:
-                threads.append(self.parallel_executor.submit(self.execute_catchup_with_objects, old_timestep,
-                                                             old_detections, objects_to_track[:self.min_objects]))
-                objects_to_track = objects_to_track[self.min_objects:]
-            else:
-                if len(objects_to_track) > 0:
-                    threads.append(self.parallel_executor.submit(self.execute_catchup_with_objects, old_timestep,
-                                                                 old_detections, objects_to_track))
-                    objects_to_track = []
+                                                         old_detections, thread_objects))
 
         self.parallel_threads = threads
 
@@ -268,24 +250,8 @@ class BoxTracker(Tracker):
 
         # wait for threads to finish running
         # threads will modify the trackers in-place
-        time_per_loop = 0.05 # TODO: parameterize
-        previous_iter = time.time()
         self.logger.log_debug('Starting loop to check thread status')
-        while True:
-            if time.time() - previous_iter < time_per_loop:
-                time.sleep(time_per_loop/4)
-
-            previous_iter = time.time()
-            # check on every thread
-            for thread in threads:
-                if thread.done():
-                    if thread.exception():
-                        err = thread.exception()
-                        raise NotImplementedError(f'Catchup thread errored for some reason: {str(err)}')
-                else:
-                    break # break out of for loop, back to while loop
-            else:
-                break # break out of while loop, every thread is done
+        wait_for_threads(threads)
 
         self.parallel_threads = [None]
 

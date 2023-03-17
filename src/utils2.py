@@ -9,6 +9,7 @@ from skimage import color
 from scipy.optimize import linear_sum_assignment
 import pandas as pd
 import pycocotools.mask as rletools
+import time
 
 def default_detection_postprocessor(d):
     return
@@ -749,3 +750,45 @@ def get_gt_dets_from_mask_as_pred(class_info : ((int,), (int,)), gt_mask : np.ar
         gt_boxes[class_info[1][i]] = get_bbox_from_mask(mask_maps[class_info[1][i]])
 
     return gt_boxes
+
+def partition_objects_into_threads(detection_keys : [int], max_threads : int, min_objects : int) -> [[int]]:
+    threads = []
+    if len(detection_keys) > max_threads * min_objects:
+        objects_per_thread = len(detection_keys) // max_threads
+        remaining_objects = objects_per_thread + len(detection_keys) % max_threads
+
+        threads.append(detection_keys[:remaining_objects])
+        detection_keys = detection_keys[remaining_objects:]
+        for i in range(max_threads - 1):
+            threads.append(detection_keys[:objects_per_thread])
+            detection_keys = detection_keys[objects_per_thread:]
+
+    else:
+        while len(detection_keys) > min_objects:
+            threads.append(detection_keys[:min_objects])
+            detection_keys = detection_keys[min_objects:]
+        else:
+            if len(detection_keys) > 0:
+                threads.append(detection_keys)
+                detection_keys = []
+
+    return threads
+
+def wait_for_threads(threads, time_per_wait = 0.01):
+    previous_iter = time.time()
+    thread_returns = []
+
+    for thread in threads: # process in sequential order
+        while True:
+            if thread.done():
+                if thread.exception():
+                    err = thread.exception()
+                    raise NotImplementedError(f'Catchup thread errored for some reason: {str(err)}')
+
+                break
+
+            time.sleep(time_per_wait)
+
+        thread_returns.append(thread.result())
+
+    return thread_returns
