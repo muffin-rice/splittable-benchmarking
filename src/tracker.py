@@ -96,8 +96,8 @@ class BoxTracker(Tracker):
         if not self.mp_catchup:
             return
 
-        self.parallel_executor = ThreadPoolExecutor(max_workers=num_threads)
-        self.parallel_threads = [None]
+        self.parallel_catchup_executor = ThreadPoolExecutor(max_workers=num_threads)
+        self.parallel_catchup_threads = [None]
         self.max_threads = num_threads
         self.min_objects = min_objects
 
@@ -126,13 +126,20 @@ class BoxTracker(Tracker):
     def restart_tracker(self, frame : np.ndarray, detections : {int : (int)}):
         self.trackers = self.get_new_trackers(frame, detections)
         if self.mp_catchup:
-            for thread in self.parallel_threads:
+            for thread in self.parallel_catchup_threads:
                 if thread is not None:
                     thread.cancel()
         self.reset_waiting_policy()
 
     def process_frame(self, frame) -> {int : (int,)}:
         '''returns {object_id, new_bb_xyxy}'''
+        # TODO: introduce variables if necessary, mp_catchup is separated (cannot share same ThreadPoolExec)
+        if self.mp_catchup and len(self.trackers) >= 2*self.min_objects:
+            # multithread the catchup
+            pass
+        else:
+            return process_objects_in_tracker(self.trackers, frame, list(self.trackers.keys()))
+
         updated_boxes = {}
 
         for object_id, tracker in self.trackers.items():
@@ -165,7 +172,7 @@ class BoxTracker(Tracker):
         self.mp_trackers = {}
         self.reset_waiting_policy()
         if self.mp_catchup:
-            for thread in self.parallel_threads:
+            for thread in self.parallel_catchup_threads:
                 if thread is not None:
                     thread.cancel()
 
@@ -209,10 +216,10 @@ class BoxTracker(Tracker):
         threads_with_objects = partition_objects_into_threads(objects_to_track, self.max_threads, self.min_objects)
 
         for thread_objects in threads_with_objects:
-            threads.append(self.parallel_executor.submit(self.execute_catchup_with_objects, old_timestep,
-                                                         old_detections, thread_objects))
+            threads.append(self.parallel_catchup_executor.submit(self.execute_catchup_with_objects, old_timestep,
+                                                                 old_detections, thread_objects))
 
-        self.parallel_threads = threads
+        self.parallel_catchup_threads = threads
 
         num_threads = len(threads)
 
@@ -225,7 +232,7 @@ class BoxTracker(Tracker):
         self.logger.log_debug('Starting loop to check thread status')
         wait_for_threads(threads)
 
-        self.parallel_threads = [None]
+        self.parallel_catchup_threads = [None]
 
         return {'process_time': time.time() - starting_time,
                 'added_frames': len(self.catchup_frames) - starting_length,
