@@ -772,6 +772,8 @@ def partition_objects_into_threads(detection_keys : [int], max_threads : int, mi
                 threads.append(detection_keys)
                 detection_keys = []
 
+    assert len(detection_keys) == 0, f'Threads did not completely fill objects_to_track: {detection_keys}'
+
     return threads
 
 def wait_for_threads(threads, time_per_wait = 0.01):

@@ -224,7 +224,7 @@ class BoxTracker(Tracker):
         num_threads = len(threads)
 
         self.logger.log_info(f'Launched {num_threads} threads')
-        assert len(objects_to_track) == 0, f'Threads did not completely fill objects_to_track: {objects_to_track}'
+
         assert len(threads) > 1, f'Threads length is {num_threads}; mistake'
 
         # wait for threads to finish running
