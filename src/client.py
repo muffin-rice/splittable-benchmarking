@@ -545,16 +545,14 @@ class Client:
         '''evaluates detections and pushes the logs'''
         # TODO: Combine eval functions
         self.logger.log_info('Evaluating detections.')
-        time_to_eval = time.time()
         pred_scores, missing_preds = eval_detections(gt_detections, pred_detections, object_id_mapping)
-        self.stats_logger.push_log({'missing_preds' : missing_preds, 'time_to_eval': time.time() - time_to_eval, **pred_scores}, append=False)
+        self.stats_logger.push_log({'missing_preds' : missing_preds, **pred_scores}, append=False)
         return
 
     def eval_segmentation(self, gt_mask, pred_mask, object_id_mapping):
         self.logger.log_info('Evaluating segmentation.')
-        time_to_eval = time.time()
         pred_scores, missing_preds = eval_segmentation(gt_mask, pred_mask, object_id_mapping)
-        self.stats_logger.push_log({'missing_preds' : missing_preds, 'time_to_eval': time.time() - time_to_eval, **pred_scores}, append=False)
+        self.stats_logger.push_log({'missing_preds' : missing_preds, **pred_scores}, append=False)
 
     def _reset_state_on_launch(self, data):
         '''state update for post-function of launching parallel detection'''
@@ -578,6 +576,7 @@ class Client:
         try:
             end_of_previous_iteration = time.time()
             for i, d in enumerate(self.dataset.get_dataset()):
+                start_time_of_iteration = time.time()
                 i = i + start_i
                 # TODO: wrap into function for easier external testing
                 self.logger.log_info(f'Starting iteration {i}')
@@ -650,6 +649,7 @@ class Client:
 
                 self.k += 1
 
+                time_to_eval_start = time.time()
                 if self.run_eval:
                     if self.run_type == 'BB':
                         self.eval_detections(gt_as_pred, pred, self.object_gt_mapping)
@@ -663,6 +663,9 @@ class Client:
                         pred_masks = self.tracker.get_masks()
                         self.eval_segmentation(gt_masks_as_pred, pred_masks, self.object_gt_mapping)
 
+                now = time.time()
+                self.stats_logger.push_log({'iteration_time' : now - start_time_of_iteration,
+                                            'time_to_eval' : now - time_to_eval_start})
                 # push log
                 self.stats_logger.push_log({}, append=True)
 

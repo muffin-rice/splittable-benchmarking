@@ -194,7 +194,7 @@ class BoxTracker(Tracker):
             self.logger.log_debug(f'Processed frame {num_processed}')
             num_processed += 1
 
-        return {'process_time': time.time() - starting_time,
+        return {'catchup_time': time.time() - starting_time,
                 'added_frames': len(self.catchup_frames) - starting_length}
 
     def execute_catchup_mp(self, old_timestep, old_detections):
@@ -234,7 +234,7 @@ class BoxTracker(Tracker):
 
         self.parallel_catchup_threads = [None]
 
-        return {'process_time': time.time() - starting_time,
+        return {'catchup_time': time.time() - starting_time,
                 'added_frames': len(self.catchup_frames) - starting_length,
                 'num_threads' : num_threads}
 
