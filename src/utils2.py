@@ -468,11 +468,11 @@ def eval_detections(gt_detections : {int : (int,)}, pred_detections : {int : (in
 def rgb2lab(img):
     assert img.shape[2] == 3
 
-    return color.rgb2lab(img)
+    return cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
 
 
 def lab2rgb(img):
-    return color.lab2rgb(img)
+    return cv2.cvtColor(img, cv2.COLOR_LAB2RGB)
 
 
 def separate_segmentation_mask(mask : np.array, OBJECT_LIMIT = 20) -> {int : np.array}:
