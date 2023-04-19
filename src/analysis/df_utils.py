@@ -209,7 +209,7 @@ def display_frame(timestep : int, pred_df, frames, annotation_df, tracked_number
 
     if tracked_numbers is None:
         pred_df_slice = pred_df.loc[pred_df['iter'] == timestep]
-        ns = get_tracked_objects(pred_df)
+        ns = get_all_tracked_objects(pred_df)
         tracked_numbers = []
         for x in ns:
             if np.isnan(pred_df_slice[f'p_d_{x}']) or pred_df_slice[f'p_d_{x}'] == 0:
@@ -246,3 +246,6 @@ def get_nonnan_rows(df, col):
 
 def get_group(grouped, group_name):
     return remove_empty_cols(grouped.get_group(group_name))
+
+def get_time_columns(df):
+    return ' '.join(x for x in df if 'time' in x)
