@@ -102,6 +102,6 @@ class Evaler:
             self.load_gt_bbsm(class_info, gt)
 
         if self.run_type == 'BB':
-            self.console_logger.log_debug(f'num gt_detections : {len(gt_as_pred)}')
+            self.console_logger.log_debug(f'num gt_detections : {len(self.gt_as_pred)}')
         elif self.run_type == 'SM' or self.run_type == 'BBSM':
-            self.console_logger.log_debug(f'Got gt mask; type {type(gt_preds)} with len {len(gt_preds)}')
+            self.console_logger.log_debug(f'Got gt mask; type {type(self.gt_preds)} with len {len(self.gt_preds)}')
