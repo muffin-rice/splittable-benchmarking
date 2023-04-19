@@ -20,10 +20,10 @@ class Evaler:
 
     def cast_obj_to_tensor(self, obj):
         if 'array' in str(type(obj)):
-            return torch.from_numpy(obj)
+            return torch.from_numpy(obj).to(self.device)
 
         if 'dict' in str(type(obj)):
-            return {k : torch.from_numpy(v) for k, v in obj.items()}
+            return {k : torch.as_tensor(v, device = self.device) for k, v in obj.items()}
 
     def calculate_mask_iou(self, maskA, maskB):
         intersection = self.and_lambda(maskA, maskB).sum()
@@ -62,7 +62,7 @@ class Evaler:
         format_lambda = lambda object_id: f'p_s_{object_id}'
         self.console_logger.log_info('Evaluating segmentation')
         if self.device == 'cuda':
-            gt_detections = self.cast_obj_to_tensor(gt_detections)
+            gt_masks = self.cast_obj_to_tensor(gt_masks)
         pred_scores, missing_preds = eval_predictions(gt_masks, pred_masks, object_id_mapping, self.calculate_mask_iou, format_lambda)
         self.stats_logger.push_log({'missing_preds' : missing_preds, **pred_scores})
 
