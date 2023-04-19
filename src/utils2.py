@@ -183,9 +183,9 @@ def calculate_bb_iou(boxA, boxB):
     # return the intersection over union value
     return iou
 
-def calculate_mask_iou(maskA, maskB):
-    intersection = np.logical_and(maskA, maskB).sum()
-    union = np.logical_or(maskA, maskB).sum()
+def calculate_mask_iou(maskA, maskB, and_lambda = np.logical_and, or_lambda = np.logical_or):
+    intersection = and_lambda(maskA, maskB).sum()
+    union = or_lambda(maskA, maskB).sum()
 
     return intersection / union
 
@@ -606,24 +606,36 @@ def segment_subimg_kmeans(subimg, bg_ref, object_ref, norm=1) -> np.array:
 
     return ref_dists.sum(axis=-1) < bg_dists.sum(axis=-1)
 
-def segment_image_kmeans(full_img: np.array, object_boxes: {int: [int]}, object_references: {int : np.array}, max_box_radius=5):
+def segment_image_kmeans(full_img: np.array, object_boxes: {int: [int]}, object_references: {int : np.array},
+                         max_box_radius=5, device='cpu'):
     '''for every box mapped as object_id : [bbox (XYXY)], return the cluster
-    full_img should be H x W x 3'''
+    full_img should be H x W x 3
+    if device is cuda/non-cpu, returning boxes will be in that device'''
     assert full_img.shape[2] == 3
 
-    img_lab = rgb2lab(full_img)
-    image_normalization = img_lab.max(axis=(0, 1))
-
     # assume the edges of the image are the background and use as reference
+    # use of object_references2 to get tensor arrays (if applicable)
     # TODO: make the background the actual background
+    if device == 'cpu':
+        img_lab = rgb2lab(full_img)
+        image_normalization = img_lab.max(axis=(0, 1))
+        background_mask = np.zeros((img_lab.shape[0], img_lab.shape[1]), dtype=bool)
+        object_references2 = object_references
+    else: # gpu accel
+        img_lab = torch.from_numpy(rgb2lab(full_img)).float().to(device)
+        image_normalization = img_lab.amax(dim=(0,1))
+        background_mask = torch.zeros((img_lab.shape[0], img_lab.shape[1]), dtype=bool)
+        object_references2 = {k : torch.from_numpy(v).to(device) for k, v in object_references.items()}
 
-    background_mask = np.zeros((img_lab.shape[0], img_lab.shape[1]), dtype=bool)
     background_mask[:5, :] = 1
     background_mask[-5:, :] = 1
     background_mask[:, -5:] = 1
     background_mask[:, :5] = 1
 
-    ref_bg = img_lab[background_mask].mean(axis=0)
+    if device == 'cpu':
+        ref_bg = img_lab[background_mask].mean(axis=0)
+    else: # cuda uses dim keyword
+        ref_bg = img_lab[background_mask].mean(dim=0)
 
     obj_masks = {}
 
@@ -637,7 +649,7 @@ def segment_image_kmeans(full_img: np.array, object_boxes: {int: [int]}, object_
 
         # bounding box to segment
         subimg_lab = img_lab[bbox[1]: bbox[3], bbox[0]: bbox[2]]
-        mask = segment_subimg_kmeans(subimg_lab, ref_bg, object_references[object_id], image_normalization)
+        mask = segment_subimg_kmeans(subimg_lab, ref_bg, object_references2[object_id], image_normalization)
 
         obj_masks[object_id] = np.zeros((full_img.shape[0], full_img.shape[1]))
         obj_masks[object_id][bbox[1]: bbox[3], bbox[0]: bbox[2]] = mask
