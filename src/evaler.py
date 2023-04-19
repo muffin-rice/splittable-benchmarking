@@ -18,6 +18,12 @@ class Evaler:
         self.run_type = run_type
         self.tracking_box_limit = tracking_box_limit
 
+    def cast_obj_to_tensor(self, obj):
+        if 'array' in str(type(obj)):
+            return torch.from_numpy(obj)
+
+        if 'dict' in str(type(obj)):
+            return {k : torch.from_numpy(v) for k, v in obj.items()}
 
     def calculate_mask_iou(self, maskA, maskB):
         intersection = self.and_lambda(maskA, maskB).sum()
@@ -55,6 +61,8 @@ class Evaler:
         '''evals in the format of class_id : score'''
         format_lambda = lambda object_id: f'p_s_{object_id}'
         self.console_logger.log_info('Evaluating segmentation')
+        if self.device == 'cuda':
+            gt_detections = self.cast_obj_to_tensor(gt_detections)
         pred_scores, missing_preds = eval_predictions(gt_masks, pred_masks, object_id_mapping, self.calculate_mask_iou, format_lambda)
         self.stats_logger.push_log({'missing_preds' : missing_preds, **pred_scores})
 
@@ -64,6 +72,8 @@ class Evaler:
         Returns in the format of {object_id (from either) : score}'''
         format_lambda = lambda object_id: f'p_d_{object_id}'
         self.console_logger.log_info('Evaluating detections')
+        if self.device == 'cuda':
+            gt_detections = self.cast_obj_to_tensor(gt_detections)
         pred_scores, missing_preds = eval_predictions(gt_detections, pred_detections, object_id_mapping, self.calculate_bb_iou, format_lambda)
         self.stats_logger.push_log({'missing_preds' : missing_preds, **pred_scores})
 
