@@ -7,6 +7,7 @@ import pickle
 import time
 from params import PARAMS, CURR_DATE, DESIRED_CLASSES
 from Logger import ConsoleLogger, DictionaryStatsLogger
+from evaler import Evaler
 from utils2 import *
 from data import Dataset
 from tracker import Tracker, BoxTracker, MaskTracker, BoxMaskTracker, segment_image_mrf
@@ -117,7 +118,8 @@ class Client:
                  model_name = PARAMS['MODEL_NAME'], server_device = PARAMS['SERVER_DEVICE'],
                  compressor_device = PARAMS['COMPRESSOR_DEVICE'], socket_buffer_read_size = PARAMS['SOCK_BUFFER_READ_SIZE'],
                  tracking_box_limit = PARAMS['BOX_LIMIT'], parallel_run = PARAMS['SMARTDET'],
-                 detection_postprocessor : Callable = default_detection_postprocessor, log_stats = PARAMS['LOG_STATS']):
+                 detection_postprocessor : Callable = default_detection_postprocessor, log_stats = PARAMS['LOG_STATS'],
+                 client_device = PARAMS['CLIENT_DEVICE']):
 
         self.socket, self.message, self.socket_buffer_read_size = None, None, socket_buffer_read_size
         self.logger, self.dataset = ConsoleLogger(), Dataset(dataset=dataset)
@@ -156,6 +158,8 @@ class Client:
 
         else:
             raise NotImplementedError
+
+        self.evaler = Evaler(client_device, self.run_type, self.logger, self.stats_logger, self.tracking_box_limit)
 
     def is_detection(self):
         return self.task == 'det'
@@ -327,7 +331,6 @@ class Client:
         returns in the format of {object_id : (xyxy)}'''
 
         data, size_orig, class_info, gt, fname, _ = d
-        gt_as_pred = self.get_gt_as_pred(class_info, gt)
 
         # if gt is used, function will simply return the ground truth;
         if self.is_gt():
@@ -336,7 +339,7 @@ class Client:
             _, size_orig, class_info, gt, _, _ = d
 
             self.stats_logger.push_log({'gt' : True, 'original_size' : size_orig})
-            return gt_as_pred
+            return self.get_gt_as_pred(class_info, gt)
 
         # otherwise, use an actual detector
         self._compress_and_send_data(d)
@@ -346,7 +349,7 @@ class Client:
         now = time.time()
         server_data = self._get_model_data() # batch size 1
         if server_data is None:
-            server_data = gt_as_pred
+            server_data = self.get_gt_as_pred(class_info, gt)
 
         self.stats_logger.push_log({'response_time': time.time() - now}, append=False)
         self.logger.log_info(f'Received information with response time {time.time() - now}')
@@ -541,19 +544,6 @@ class Client:
             self.parallel_state = 0
             self.parallel_thread = None
 
-    def eval_detections(self, gt_detections, pred_detections, object_id_mapping):
-        '''evaluates detections and pushes the logs'''
-        # TODO: Combine eval functions
-        self.logger.log_info('Evaluating detections.')
-        pred_scores, missing_preds = eval_detections(gt_detections, pred_detections, object_id_mapping)
-        self.stats_logger.push_log({'missing_preds' : missing_preds, **pred_scores}, append=False)
-        return
-
-    def eval_segmentation(self, gt_mask, pred_mask, object_id_mapping):
-        self.logger.log_info('Evaluating segmentation.')
-        pred_scores, missing_preds = eval_segmentation(gt_mask, pred_mask, object_id_mapping)
-        self.stats_logger.push_log({'missing_preds' : missing_preds, **pred_scores}, append=False)
-
     def _reset_state_on_launch(self, data):
         '''state update for post-function of launching parallel detection'''
         self.parallel_state = 1
@@ -589,13 +579,7 @@ class Client:
                 if start:
                     self.close_mp() # should be done at "end" but do it here
 
-                # get the gt detections in {object : info} for eval
-                gt_preds = self.get_gt(class_info, gt) # class : {object : info}
-                gt_as_pred = self.get_gt_as_pred(class_info, gt) # {object : info}
-                if self.run_type == 'BB':
-                    self.logger.log_debug(f'num gt_detections : {len(gt_as_pred)}')
-                elif self.run_type == 'SM' or self.run_type == 'BBSM':
-                    self.logger.log_debug(f'Got gt mask; type {type(gt_preds)} with len {len(gt_preds)}')
+                self.evaler.load_gt(class_info, gt)
 
                 # first check if the parallel detection process has completed
                 self.update_parallel_states(data)
@@ -640,7 +624,7 @@ class Client:
                     pred = self.get_tracker_pred_from_frame(data)
 
                 if pred is None:
-                    pred = gt_as_pred
+                    pred = self.get_gt_as_pred(class_info, gt)
 
                 if len(pred) == 0:
                     self.logger.log_info('There are no predictions for this frame.')
@@ -651,17 +635,13 @@ class Client:
 
                 time_to_eval_start = time.time()
                 if self.run_eval:
-                    if self.run_type == 'BB':
-                        self.eval_detections(gt_as_pred, pred, self.object_gt_mapping)
-                    elif self.run_type == 'SM':
-                        self.eval_segmentation(gt_as_pred, pred, self.object_gt_mapping)
-                    elif self.run_type == 'BBSM': # pred is still in "bb" mode
-                        self.logger.log_debug('Eval detections and pred')
-                        self.eval_detections(gt_as_pred, pred, self.object_gt_mapping)
-                        gt_masks_as_pred = get_gt_masks_as_pred(class_info, gt)
-                        # map boxes to integers
+                    if self.run_type in ('BB', 'SM'):
+                        pred_masks = None
+                    elif self.run_type == 'BBSM':
                         pred_masks = self.tracker.get_masks()
-                        self.eval_segmentation(gt_masks_as_pred, pred_masks, self.object_gt_mapping)
+                    else:
+                        raise NotImplementedError
+                    self.evaler.evaluate_predictions(pred, self.object_gt_mapping, pred_masks)
 
                 now = time.time()
                 self.stats_logger.push_log({'iteration_time' : now - start_time_of_iteration,

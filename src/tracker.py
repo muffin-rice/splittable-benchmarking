@@ -248,12 +248,13 @@ class BoxTracker(Tracker):
 
 class MaskTracker(Tracker):
     def __init__(self, logger : ConsoleLogger, tracker_type = PARAMS['TRACKER'],
-                 waiting_policy = PARAMS['WAITING_POLICY']):
+                 waiting_policy = PARAMS['WAITING_POLICY'], device = PARAMS['COMPRESSOR_DEVICE']):
         self.current_mask = None # don't really need the current_mask
         self.logger = logger
         self.tracker_type = tracker_type
         self.box_tracker = BoxTracker(logger, waiting_policy=waiting_policy)
         self.object_references = None
+        self.device = device
 
     def get_boxes(self, masks : {int : np.array}) -> {int : [int]}:
         return {object_id : get_bbox_from_mask(mask) for object_id, mask in masks.items()}
@@ -265,7 +266,7 @@ class MaskTracker(Tracker):
 
     def process_frame(self, frame):
         new_boxes = cast_bbox_to_int(self.box_tracker.process_frame(frame))
-        self.current_mask = segment_image_kmeans(frame, new_boxes, self.object_references)
+        self.current_mask = segment_image_kmeans(frame, new_boxes, self.object_references, device = self.device)
         return self.current_mask
 
     def init_multiprocessing(self):
@@ -297,7 +298,7 @@ class MaskTracker(Tracker):
 class BoxMaskTracker(Tracker):
     '''tracker that takes as input boxes but outputs masks in the process_frame code'''
     def __init__(self, logger : ConsoleLogger, segmenter = PARAMS['BBOX_SEG'], tracker_type = PARAMS['TRACKER'],
-                 waiting_policy = PARAMS['WAITING_POLICY']):
+                 waiting_policy = PARAMS['WAITING_POLICY'], device = PARAMS['COMPRESSOR_DEVICE']):
         self.segmenter = segmenter
         if segmenter == 'knn': # nearest neighbor clustering
             self.segment_image = segment_image_kmeans
@@ -310,12 +311,15 @@ class BoxMaskTracker(Tracker):
         self.box_tracker = BoxTracker(logger, tracker_type, waiting_policy=waiting_policy)
         self.object_references = None
         self.current_processed_masks = None
+        self.device = device
 
     def process_frame(self, frame):
+        '''processes the frame in certain device and then returns in cpu device'''
         boxes = self.box_tracker.process_frame(frame)
 
         if self.segmenter == 'knn':
-            self.current_processed_masks = segment_image_kmeans(frame, cast_bbox_to_int(boxes), self.object_references)
+            self.current_processed_masks = segment_image_kmeans(frame, cast_bbox_to_int(boxes), self.object_references,
+                                                                device = self.device)
             return boxes
 
         raise NotImplementedError(f'Segmenter not implemented : {self.segmenter}')
@@ -325,7 +329,8 @@ class BoxMaskTracker(Tracker):
         if self.segmenter == 'knn':
             self.object_references = get_midbox_references(cast_bbox_to_int(pred_boxes), frame)
         self.box_tracker.restart_tracker(frame, pred_boxes)
-        self.current_processed_masks = segment_image_kmeans(frame, cast_bbox_to_int(pred_boxes), self.object_references)
+        self.current_processed_masks = segment_image_kmeans(frame, cast_bbox_to_int(pred_boxes), self.object_references,
+                                                            device = self.device)
 
     def init_multiprocessing(self):
         self.old_frame = None
