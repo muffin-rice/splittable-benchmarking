@@ -131,14 +131,14 @@ class BoxTracker(Tracker):
                     thread.cancel()
         self.reset_waiting_policy()
 
-    def process_frame(self, frame) -> {int : (int,)}:
+    def process_frame(self, frame) -> ({int : (int,)}, {str : float}):
         '''returns {object_id, new_bb_xyxy}'''
         # TODO: introduce variables if necessary, mp_catchup is separated (cannot share same ThreadPoolExec)
         if self.mp_catchup and len(self.trackers) >= 2*self.min_objects:
             # multithread the catchup
             pass
         else:
-            return process_objects_in_tracker(self.trackers, frame, list(self.trackers.keys()))
+            return process_objects_in_tracker(self.trackers, frame, list(self.trackers.keys())), {}
 
         updated_boxes = {}
 
@@ -148,7 +148,7 @@ class BoxTracker(Tracker):
             if success:
                 updated_boxes[object_id] = map_xyhw_to_xyxy(bbox_xyhw)
 
-        return updated_boxes
+        return updated_boxes, {}
 
     def init_multiprocessing(self):
         self.catchup_frames = []
@@ -265,9 +265,14 @@ class MaskTracker(Tracker):
         self.box_tracker.restart_tracker(frame, self.get_boxes(mask))
 
     def process_frame(self, frame):
-        new_boxes = cast_bbox_to_int(self.box_tracker.process_frame(frame))
-        self.current_mask = segment_image_kmeans(frame, new_boxes, self.object_references, device = self.device)
-        return self.current_mask
+        time_dict = {}
+        box_time = time.time()
+        new_boxes, _ = self.box_tracker.process_frame(frame)
+        time_dict['box_time'] = time.time() - box_time
+        seg_time = time.time()
+        self.current_mask = segment_image_kmeans(frame, cast_bbox_to_int(new_boxes), self.object_references, device = self.device)
+        time_dict['seg_time'] = time.time() - seg_time
+        return self.current_mask, time_dict
 
     def init_multiprocessing(self):
         self.old_frame = None
@@ -315,12 +320,17 @@ class BoxMaskTracker(Tracker):
 
     def process_frame(self, frame):
         '''processes the frame in certain device and then returns in cpu device'''
-        boxes = self.box_tracker.process_frame(frame)
+        time_dict = {}
+        box_time = time.time()
+        boxes, _ = self.box_tracker.process_frame(frame)
+        time_dict['box_time'] = time.time() - box_time
 
         if self.segmenter == 'knn':
+            kmeans_time = time.time()
             self.current_processed_masks = segment_image_kmeans(frame, cast_bbox_to_int(boxes), self.object_references,
                                                                 device = self.device)
-            return boxes
+            time_dict['seg_time'] = time.time() - kmeans_time
+            return boxes, time_dict
 
         raise NotImplementedError(f'Segmenter not implemented : {self.segmenter}')
 

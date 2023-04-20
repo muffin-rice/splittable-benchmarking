@@ -43,7 +43,7 @@ PARAMS['SERVER_MODEL_PATH'] = 'Models/Split/model_2_client.pt'
 # params for run type
 PARAMS['RUN_TYPE'] = 'BB' # 'bounding box' (BB) vs 'segmentation mask' (SM) vs segmask after bb 'BBSM'
 PARAMS['EVAL'] = True
-PARAMS['BOX_LIMIT'] = 10 # max number of boxes to track, only applicable if EVAL is false
+PARAMS['BOX_LIMIT'] = 10 # max number of boxes to track
 
 # params for the tracking
 PARAMS['TRACKING'] = True # execute + evaluate a tracking algorithm; if false, evaluates the detector
