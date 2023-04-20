@@ -59,7 +59,9 @@ class Server:
                  dataset = PARAMS['DATASET']):
         self.socket, self.connection, self.server_connect, self.socket_buffer_read_size = None, None, server_connect, socket_buffer_read_size
         self.data, self.logger = None, ConsoleLogger()
-        self.stats_logger = DictionaryStatsLogger(logfile=f"{stats_log_dir}/server-{run_type}-{dataset}-{CURR_DATE}.log", log_stats=log_stats)
+        dict_logfile = f"{stats_log_dir}/server-{run_type}-{dataset}-{CURR_DATE}.log"
+        self.stats_logger = DictionaryStatsLogger(logfile=dict_logfile, log_stats=log_stats)
+        self.logger.log_info(f'Writing dictionary to {dict_logfile}')
         self.task = task
         self.compressor, self.model_name, self.server_device = compressor, model_name, server_device
         self._init_model()

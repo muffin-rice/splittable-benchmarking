@@ -123,7 +123,9 @@ class Client:
 
         self.socket, self.message, self.socket_buffer_read_size = None, None, socket_buffer_read_size
         self.logger, self.dataset = ConsoleLogger(), Dataset(dataset=dataset)
-        self.stats_logger = DictionaryStatsLogger(logfile=f"{stats_log_dir}/client-{run_type}-{dataset}-{CURR_DATE}.log", log_stats=log_stats)
+        dict_logfile = f"{stats_log_dir}/client-{run_type}-{dataset}-{CURR_DATE}.log"
+        self.stats_logger = DictionaryStatsLogger(logfile=dict_logfile, log_stats=log_stats)
+        self.logger.log_info(f'Writing dictionary to {dict_logfile}')
         self.server_connect, self.tracking, self.task, self.run_type = server_connect, tracking, task, run_type
         self.compressor, self.refresh_type = compressor, refresh_type
         self.run_eval, self.model_name, self.tracking_box_limit = run_eval, model_name, tracking_box_limit
