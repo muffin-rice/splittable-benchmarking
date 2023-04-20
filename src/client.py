@@ -576,7 +576,8 @@ class Client:
                 assert self.run_type in ('BB', 'SM', 'BBSM'), 'No other type of run'
 
                 data, size_orig, class_info, gt, fname, start = d
-                self.stats_logger.push_log({'iter' : i, 'fname' : fname})
+                self.stats_logger.push_log({'iter' : i, 'fname' : fname,
+                                            'time_waiting_data' : start_time_of_iteration - end_of_previous_iteration})
 
                 if start:
                     self.close_mp() # should be done at "end" but do it here
