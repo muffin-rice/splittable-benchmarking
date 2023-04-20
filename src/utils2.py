@@ -11,6 +11,29 @@ import pandas as pd
 import pycocotools.mask as rletools
 import time
 
+def run_gen_in_bg(generator):
+    import multiprocessing
+    def _bg_gen(gen, conn):
+        while conn.recv():
+            try:
+                conn.send(next(gen))
+            except StopIteration:
+                conn.send(StopIteration)
+                return
+
+    parent_conn, child_conn = multiprocessing.Pipe()
+    p = multiprocessing.Process(target=_bg_gen, args=(generator, child_conn))
+    p.start()
+
+    parent_conn.send(True)
+    while True:
+        parent_conn.send(True)
+        x = parent_conn.recv()
+        if x is StopIteration:
+            return
+        else:
+            yield x
+
 def default_detection_postprocessor(d):
     return
 

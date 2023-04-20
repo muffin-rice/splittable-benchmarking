@@ -565,7 +565,7 @@ class Client:
     def start_loop(self, start_i = 0):
         try:
             end_of_previous_iteration = time.time()
-            for i, d in enumerate(self.dataset.get_dataset()):
+            for i, d in enumerate(run_gen_in_bg(self.dataset.get_dataset())):
                 start_time_of_iteration = time.time()
                 i = i + start_i
                 # TODO: wrap into function for easier external testing
