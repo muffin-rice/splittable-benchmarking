@@ -64,8 +64,12 @@ class Evaler:
         if self.device == 'cuda':
             gt_masks = self.cast_obj_to_tensor(gt_masks)
             pred_masks = self.cast_obj_to_tensor(pred_masks)
-        pred_scores, missing_preds = eval_predictions(gt_masks, pred_masks, object_id_mapping, self.calculate_mask_iou, format_lambda)
-        self.stats_logger.push_log({'missing_preds' : missing_preds, **pred_scores})
+            pred_scores, missing_preds = eval_predictions(gt_masks, pred_masks, object_id_mapping, self.calculate_mask_iou, format_lambda)
+            self.stats_logger.push_log({'missing_preds' : missing_preds, **{k : v.item() for k, v in pred_scores.items()}})
+
+        pred_scores, missing_preds = eval_predictions(gt_masks, pred_masks, object_id_mapping, self.calculate_mask_iou,
+                                                      format_lambda)
+        self.stats_logger.push_log({'missing_preds': missing_preds, **pred_scores})
 
     def eval_detections(self, gt_detections: {int: (int,)}, pred_detections: {int: (int,)},
                         object_id_mapping: {int: int}) -> ({int: float}, {int}):
@@ -76,8 +80,13 @@ class Evaler:
         if self.device == 'cuda':
             gt_detections = self.cast_obj_to_tensor(gt_detections)
             pred_detections = self.cast_obj_to_tensor(pred_detections)
-        pred_scores, missing_preds = eval_predictions(gt_detections, pred_detections, object_id_mapping, self.calculate_bb_iou, format_lambda)
-        self.stats_logger.push_log({'missing_preds' : missing_preds, **pred_scores})
+            pred_scores, missing_preds = eval_predictions(gt_detections, pred_detections, object_id_mapping,
+                                                          self.calculate_mask_iou, format_lambda)
+            self.stats_logger.push_log({'missing_preds': missing_preds, **{k: v.item() for k, v in pred_scores.items()}})
+
+        pred_scores, missing_preds = eval_predictions(gt_detections, pred_detections, object_id_mapping, self.calculate_mask_iou,
+                                                      format_lambda)
+        self.stats_logger.push_log({'missing_preds': missing_preds, **pred_scores})
 
     def evaluate_predictions(self, pred, object_gt_mapping, pred_masks=None):
         if self.run_type == 'BB':
