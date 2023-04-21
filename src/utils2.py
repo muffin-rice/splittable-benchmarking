@@ -10,6 +10,7 @@ from scipy.optimize import linear_sum_assignment
 import pandas as pd
 import pycocotools.mask as rletools
 import time
+from typing import Union
 
 def run_gen_in_bg(generator):
     import multiprocessing
@@ -622,12 +623,12 @@ def get_midbox_references(bboxes : {int : (int,)}, full_img : np.array, box_radi
 
     return box_references
 
-def segment_subimg_kmeans(subimg, bg_ref, object_ref, norm=1) -> np.array:
+def segment_subimg_kmeans(subimg, bg_ref, object_ref, axis_arg : {}, norm=1) -> Union[np.array, torch.Tensor]:
     '''segments a bounding box with a given subimg and a background reference'''
     bg_dists = (subimg - bg_ref) ** 2 / norm
     ref_dists = (subimg - object_ref) ** 2 / norm
 
-    return ref_dists.sum(axis=-1) < bg_dists.sum(axis=-1)
+    return ref_dists.sum(**axis_arg) < bg_dists.sum(**axis_arg)
 
 def segment_image_kmeans(full_img: np.array, object_boxes: {int: [int]}, object_references: {int : np.array},
                          max_box_radius=5, device='cpu'):
@@ -644,11 +645,13 @@ def segment_image_kmeans(full_img: np.array, object_boxes: {int: [int]}, object_
         image_normalization = img_lab.max(axis=(0, 1))
         background_mask = np.zeros((img_lab.shape[0], img_lab.shape[1]), dtype=bool)
         object_references2 = object_references
+        axis_arg = {'axis' : -1}
     else: # gpu accel
         img_lab = torch.from_numpy(rgb2lab(full_img)).float().to(device)
         image_normalization = img_lab.amax(dim=(0,1))
         background_mask = torch.zeros((img_lab.shape[0], img_lab.shape[1]), dtype=bool)
         object_references2 = {k : torch.from_numpy(v).to(device) for k, v in object_references.items()}
+        axis_arg = {'dim' : -1}
 
     background_mask[:5, :] = 1
     background_mask[-5:, :] = 1
@@ -672,9 +675,13 @@ def segment_image_kmeans(full_img: np.array, object_boxes: {int: [int]}, object_
 
         # bounding box to segment
         subimg_lab = img_lab[bbox[1]: bbox[3], bbox[0]: bbox[2]]
-        mask = segment_subimg_kmeans(subimg_lab, ref_bg, object_references2[object_id], image_normalization)
+        mask = segment_subimg_kmeans(subimg_lab, ref_bg, object_references2[object_id],
+                                     axis_arg=axis_arg, norm=image_normalization)
 
         obj_masks[object_id] = np.zeros((full_img.shape[0], full_img.shape[1]))
+        if device != 'cpu':
+            mask = mask.cpu().numpy()
+
         obj_masks[object_id][bbox[1]: bbox[3], bbox[0]: bbox[2]] = mask
 
     return obj_masks
