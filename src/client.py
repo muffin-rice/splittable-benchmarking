@@ -1,6 +1,5 @@
 from socket import *
 from struct import pack, unpack
-import torch
 from torch import nn
 
 import pickle

@@ -4,8 +4,6 @@ import cv2
 import numpy as np
 from params import PARAMS, DESIRED_CLASSES
 import torch
-from copy import deepcopy
-from skimage import color
 from scipy.optimize import linear_sum_assignment
 import pandas as pd
 import pycocotools.mask as rletools

@@ -30,7 +30,7 @@ class Evaler:
         return log_dict
 
     def calculate_mask_iou(self, maskA, maskB):
-        if self.device == 'cuda':
+        if 'cuda' in self.device:
             intersection = torch.logical_and(maskA, maskB).sum()
             union = torch.logical_or(maskA, maskB).sum()
 
@@ -66,7 +66,7 @@ class Evaler:
         iou = interArea / (boxAArea + boxBArea - interArea)
 
         # return the intersection over union value
-        if self.device == 'cuda':
+        if 'cuda' in self.device:
             return iou.item()
 
         return iou
@@ -75,7 +75,7 @@ class Evaler:
         '''evals in the format of class_id : score'''
         format_lambda = lambda object_id: f'p_s_{object_id}'
         self.console_logger.log_info('Evaluating segmentation')
-        if self.device == 'cuda':
+        if 'cuda' in self.device:
             gt_masks = self.cast_obj_to_tensor(gt_masks)
             pred_masks = self.cast_obj_to_tensor(pred_masks)
             pred_scores, missing_preds = eval_predictions(gt_masks, pred_masks, object_id_mapping,
@@ -94,7 +94,7 @@ class Evaler:
         Returns in the format of {object_id (from either) : score}'''
         format_lambda = lambda object_id: f'p_d_{object_id}'
         self.console_logger.log_info('Evaluating detections')
-        if self.device == 'cuda':
+        if 'cuda' in self.device:
             gt_detections = self.cast_obj_to_tensor(gt_detections)
             pred_detections = self.cast_obj_to_tensor(pred_detections)
             pred_scores, missing_preds = eval_predictions(gt_detections, pred_detections, object_id_mapping,

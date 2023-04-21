@@ -1,7 +1,4 @@
 import cv2.legacy
-import sys
-import time
-from params import PARAMS
 from utils2 import *
 from Logger import ConsoleLogger
 from abc import abstractmethod
