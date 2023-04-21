@@ -5,12 +5,6 @@ from utils2 import *
 class Evaler:
     def __init__(self, device, run_type, console_logger, stats_logger, tracking_box_limit):
         self.device = device
-        if self.device == 'cpu':
-            self.and_lambda = np.logical_and
-            self.or_lambda = np.logical_or
-        else:
-            self.and_lambda = torch.logical_and
-            self.or_lambda = torch.logical_or
 
         self.object_gt_mapping = None
         self.console_logger = console_logger
@@ -36,8 +30,15 @@ class Evaler:
         return log_dict
 
     def calculate_mask_iou(self, maskA, maskB):
-        intersection = self.and_lambda(maskA, maskB).sum()
-        union = self.or_lambda(maskA, maskB).sum()
+        if self.device == 'cuda':
+            intersection = torch.logical_and(maskA, maskB).sum()
+            union = torch.logical_or(maskA, maskB).sum()
+
+            return (intersection / union).item()
+
+        # otherwise numpy arr
+        intersection = np.logical_and(maskA, maskB).sum()
+        union = np.logical_or(maskA, maskB).sum()
 
         return intersection / union
 
@@ -65,6 +66,9 @@ class Evaler:
         iou = interArea / (boxAArea + boxBArea - interArea)
 
         # return the intersection over union value
+        if self.device == 'cuda':
+            return iou.item()
+
         return iou
 
     def eval_segmentation(self, gt_masks: {int: np.array}, pred_masks: {int: np.array}, object_id_mapping: {int: int}):
@@ -76,7 +80,8 @@ class Evaler:
             pred_masks = self.cast_obj_to_tensor(pred_masks)
             pred_scores, missing_preds = eval_predictions(gt_masks, pred_masks, object_id_mapping,
                                                           self.calculate_mask_iou, format_lambda)
-            self.stats_logger.push_log({'missing_preds' : missing_preds, **self.cast_scores_to_logs(pred_scores)})
+            self.stats_logger.push_log({'missing_preds': missing_preds, **pred_scores})
+            # self.stats_logger.push_log({'missing_preds': missing_preds, **self.cast_scores_to_logs(pred_scores)})
             return
 
         pred_scores, missing_preds = eval_predictions(gt_masks, pred_masks, object_id_mapping, self.calculate_mask_iou,
@@ -94,7 +99,8 @@ class Evaler:
             pred_detections = self.cast_obj_to_tensor(pred_detections)
             pred_scores, missing_preds = eval_predictions(gt_detections, pred_detections, object_id_mapping,
                                                           self.calculate_mask_iou, format_lambda)
-            self.stats_logger.push_log({'missing_preds': missing_preds, **self.cast_scores_to_logs(pred_scores)})
+            self.stats_logger.push_log({'missing_preds': missing_preds, **pred_scores})
+            # self.stats_logger.push_log({'missing_preds': missing_preds, **self.cast_scores_to_logs(pred_scores)})
             return
 
         pred_scores, missing_preds = eval_predictions(gt_detections, pred_detections, object_id_mapping, self.calculate_mask_iou,
