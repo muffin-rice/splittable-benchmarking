@@ -143,20 +143,14 @@ class Client:
         self.detection_postprocess = detection_postprocessor
 
         if self.run_type == 'BB':
-            self.get_gt = get_gt_detections
-            self.get_gt_as_pred = get_gt_detections_as_pred
             self.get_pred = self.get_detections
             self.reformat = self._reformat_detections_for_eval
 
         elif self.run_type == 'SM':
-            self.get_gt = get_gt_masks
-            self.get_gt_as_pred = get_gt_masks_as_pred
             self.get_pred = self.get_segmentation_mask
             self.reformat = self._reformat_masks_for_eval
 
         elif self.run_type == 'BBSM':
-            self.get_gt = get_gt_dets_from_mask
-            self.get_gt_as_pred = get_gt_dets_from_mask_as_pred
             self.get_pred = self.get_detections
             self.reformat = self._reformat_detections_for_eval
 
@@ -343,7 +337,7 @@ class Client:
             _, size_orig, class_info, gt, _, _ = d
 
             self.stats_logger.push_log({'gt' : True, 'original_size' : size_orig})
-            return self.get_gt_as_pred(class_info, gt)
+            return self.evaler.gt_as_pred
 
         # otherwise, use an actual detector
         self._compress_and_send_data(d)
@@ -355,7 +349,7 @@ class Client:
         fake_server_data = False
         if server_data is None:
             fake_server_data = True
-            server_data = self.get_gt_as_pred(class_info, gt)
+            server_data = self.evaler.gt_as_pred
 
         self.stats_logger.push_log({'response_time': time.time() - now, 'fake_server_data' : fake_server_data},
                                    append=False)
@@ -419,7 +413,7 @@ class Client:
         object_id : box, detection mapping to ground truth object IDs'''
         self.logger.log_debug('Re-generating bounding boxes.')
 
-        gt_detections_with_classes = self.get_gt(class_info, gt)
+        gt_detections_with_classes = self.evaler.gt_preds
         detections_with_classes = self._get_new_pred(d, now)
 
         if self.run_eval:
@@ -460,7 +454,7 @@ class Client:
         '''gets the segmentation mask as a class_id : np array'''''
         self.logger.log_debug('Generating mask')
 
-        gt_masks = self.get_gt(class_info, gt)
+        gt_masks = self.evaler.gt_preds
         masks = self._get_new_pred(d, now)
 
         # if self.run_eval:
@@ -637,7 +631,7 @@ class Client:
                 fake_pred = False
                 if pred is None:
                     fake_pred = True
-                    pred = self.get_gt_as_pred(class_info, gt)
+                    pred = self.evaler.gt_as_pred
 
                 if len(pred) == 0:
                     self.logger.log_info('There are no predictions for this frame.')
