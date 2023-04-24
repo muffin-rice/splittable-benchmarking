@@ -128,12 +128,14 @@ class Evaler:
         self.gt_as_pred = get_gt_masks_as_pred(class_info, gt)  # {object : info}
 
     def load_gt_bbsm(self, class_info, gt):
-        self.gt_preds = get_gt_dets_from_mask(class_info, gt)  # class : {object : info}
-        self.gt_as_pred = get_gt_dets_from_mask_as_pred(class_info, gt)  # {object : info}
+        self.gt_preds, self.gt_as_pred = get_gt_dets_from_mask_2(class_info, gt)
+        # self.gt_preds = get_gt_dets_from_mask(class_info, gt)  # class : {object : info}
+        # self.gt_as_pred = get_gt_dets_from_mask_as_pred(class_info, gt)  # {object : info}
         self.gt_masks_as_pred = get_gt_masks_as_pred(class_info, gt)
 
     def load_gt(self, class_info, gt):
         # get the gt detections in {object : info} for eval
+        eval_load_time = time.time()
         if self.run_type == 'BB':
             self.load_gt_bb(class_info, gt)
         elif self.run_type == 'SM':
@@ -145,3 +147,5 @@ class Evaler:
             self.console_logger.log_debug(f'num gt_detections : {len(self.gt_as_pred)}')
         elif self.run_type == 'SM' or self.run_type == 'BBSM':
             self.console_logger.log_debug(f'Got gt mask; type {type(self.gt_preds)} with len {len(self.gt_preds)}')
+
+        self.stats_logger.push_log({'eval_load_time': time.time() - eval_load_time}, append=False)

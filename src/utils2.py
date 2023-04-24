@@ -762,18 +762,18 @@ def get_gt_dets_from_mask(class_info : ((int,), (int,)), gt_mask : np.array) -> 
 
     assert len(class_info[1]) == len(mask_maps.keys()), f'keys are {class_info[1]} vs. {mask_maps.keys()}'
 
-    gt_masks = {}
+    gt_boxes = {}
 
     for i in range(len(class_info[0])):
         curr_class = class_info[0][i]
         curr_obj = class_info[1][i]
 
-        if curr_class not in gt_masks:
-            gt_masks[curr_class] = {curr_obj : get_bbox_from_mask(mask_maps[curr_obj])}
+        if curr_class not in gt_boxes:
+            gt_boxes[curr_class] = {curr_obj : get_bbox_from_mask(mask_maps[curr_obj])}
         else:
-            gt_masks[curr_class][curr_obj] = get_bbox_from_mask(mask_maps[curr_obj])
+            gt_boxes[curr_class][curr_obj] = get_bbox_from_mask(mask_maps[curr_obj])
 
-    return gt_masks
+    return gt_boxes
 
 def get_gt_dets_from_mask_as_pred(class_info : ((int,), (int,)), gt_mask : np.array) -> {int : (int,)}:
     '''reformats the annotations into tracker-prediction format
@@ -790,6 +790,27 @@ def get_gt_dets_from_mask_as_pred(class_info : ((int,), (int,)), gt_mask : np.ar
         gt_boxes[class_info[1][i]] = get_bbox_from_mask(mask_maps[class_info[1][i]])
 
     return gt_boxes
+
+def get_gt_dets_from_mask_2(class_info : ((int,), (int,)), gt_mask : np.array):
+    '''does both functions but in 1 and returns both (more efficient)'''
+    mask_maps = separate_segmentation_mask(gt_mask)
+
+    assert len(class_info[1]) == len(mask_maps.keys()), f'keys are {class_info[1]} vs. {mask_maps.keys()}'
+    gt_boxes_pred = {}
+    gt_boxes = {}
+    for i in range(len(class_info[0])):
+        curr_class = class_info[0][i]
+        curr_obj = class_info[1][i]
+        curr_mask = get_bbox_from_mask(mask_maps[curr_obj])
+
+        if curr_class not in gt_boxes:
+            gt_boxes[curr_class] = {curr_obj : curr_mask}
+        else:
+            gt_boxes[curr_class][curr_obj] = curr_mask
+
+        gt_boxes_pred[curr_obj] = curr_mask
+
+    return gt_boxes, gt_boxes_pred
 
 def partition_objects_into_threads(detection_keys : [int], max_threads : int, min_objects : int) -> [[int]]:
     threads = []
