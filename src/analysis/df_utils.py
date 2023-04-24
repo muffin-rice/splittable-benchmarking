@@ -248,4 +248,4 @@ def get_group(grouped, group_name):
     return remove_empty_cols(grouped.get_group(group_name))
 
 def get_time_columns(df):
-    return ' '.join(x for x in df if 'time' in x)
+    return [x for x in df if 'time' in x]

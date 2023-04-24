@@ -18,16 +18,16 @@ def create_input(data):
     return data
 
 class Client:
-    def _init_tracker(self):
+    def _init_tracker(self, device = PARAMS['CLIENT_DEVICE']):
         '''initializes mask or bb tracker'''
         if self.tracking:
             if self.run_type == 'BB':
-                self.tracker = BoxTracker(self.logger)
+                self.tracker = BoxTracker(self.logger, device=device)
             elif self.run_type == 'SM':
                 # self.tracker = MaskTracker(self.logger)
-                self.tracker = BoxMaskTracker(self.logger)
+                self.tracker = BoxMaskTracker(self.logger, device=device)
             elif self.run_type == 'BBSM':
-                self.tracker = BoxMaskTracker(self.logger)
+                self.tracker = BoxMaskTracker(self.logger, device=device)
             else:
                 raise NotImplementedError
 
@@ -146,16 +146,19 @@ class Client:
             self.get_gt = get_gt_detections
             self.get_gt_as_pred = get_gt_detections_as_pred
             self.get_pred = self.get_detections
+            self.reformat = self._reformat_detections_for_eval
 
         elif self.run_type == 'SM':
             self.get_gt = get_gt_masks
             self.get_gt_as_pred = get_gt_masks_as_pred
             self.get_pred = self.get_segmentation_mask
+            self.reformat = self._reformat_masks_for_eval
 
         elif self.run_type == 'BBSM':
             self.get_gt = get_gt_dets_from_mask
             self.get_gt_as_pred = get_gt_dets_from_mask_as_pred
             self.get_pred = self.get_detections
+            self.reformat = self._reformat_detections_for_eval
 
         else:
             raise NotImplementedError
@@ -349,10 +352,13 @@ class Client:
         # in the online case it will be 2x latency + response_time
         now = time.time()
         server_data = self._get_model_data() # batch size 1
+        fake_server_data = False
         if server_data is None:
+            fake_server_data = True
             server_data = self.get_gt_as_pred(class_info, gt)
 
-        self.stats_logger.push_log({'response_time': time.time() - now}, append=False)
+        self.stats_logger.push_log({'response_time': time.time() - now, 'fake_server_data' : fake_server_data},
+                                   append=False)
         self.logger.log_info(f'Received information with response time {time.time() - now}')
 
         return self._handle_server_data(server_data)
@@ -390,6 +396,7 @@ class Client:
         '''filters the detections by the ground truth detections and logs discrepancies
         returns detections, object mapping (model_id : gt_id)'''
         # maps the ground truth labels with the predicted output (for evaluation purposes)
+        mapping_time = time.time()
         object_id_mapping, extra_detections = map_bbox_ids(detections_with_classes, gt_detections_with_classes)
         self.stats_logger.push_log({f'extra_class_{class_id}': extra_detection
                                     for class_id, extra_detection in extra_detections.items()},
@@ -403,6 +410,8 @@ class Client:
 
         self.logger.log_debug(f'Detections made: {len(detections)}, with mapping {object_id_mapping}.')
 
+        self.stats_logger.push_log({'reformat_time' : time.time() - mapping_time}, append=False)
+
         return detections, object_id_mapping
 
     def get_detections(self, data, class_info, gt, d, now, start=False) -> ({int : [int]}, {int : int}):
@@ -415,7 +424,7 @@ class Client:
 
         if self.run_eval:
             self.logger.log_debug('Reformatting raw detections.')
-            detections, object_id_mapping = self._reformat_detections_for_eval(gt_detections_with_classes,
+            detections, object_id_mapping = self.reformat(gt_detections_with_classes,
                                                                                  detections_with_classes)
 
         else:
@@ -456,7 +465,7 @@ class Client:
 
         # if self.run_eval:
         self.logger.log_debug('Reformatting raw masks.')
-        reformatted_masks, object_id_mapping = self._reformat_masks_for_eval(gt_masks, masks)
+        reformatted_masks, object_id_mapping = self.reformat(gt_masks, masks)
         #
         # else:
         #     self.logger.log_debug('Limiting raw detections')
@@ -625,13 +634,15 @@ class Client:
                     self.logger.log_debug('Using tracker for bounding boxes.')
                     pred = self.get_tracker_pred_from_frame(data)
 
+                fake_pred = False
                 if pred is None:
+                    fake_pred = True
                     pred = self.get_gt_as_pred(class_info, gt)
 
                 if len(pred) == 0:
                     self.logger.log_info('There are no predictions for this frame.')
 
-                self.stats_logger.push_log({'iter_k': self.k})
+                self.stats_logger.push_log({'iter_k': self.k, 'fake_pred' : fake_pred})
 
                 self.k += 1
 

@@ -100,7 +100,8 @@ class BoxTracker(Tracker):
 
     def __init__(self, logger : ConsoleLogger, tracker_type = PARAMS['TRACKER'],
                  waiting_policy = PARAMS['WAITING_POLICY'], mp_catchup = PARAMS['CATCHUP_MULTITHREAD'],
-                 mp_threads = PARAMS['NUM_CATCHUP_THREADS'], mp_objs_pthread = PARAMS['MIN_OBJECTS_THREAD']):
+                 mp_threads = PARAMS['NUM_CATCHUP_THREADS'], mp_objs_pthread = PARAMS['MIN_OBJECTS_THREAD'],
+                 device=None):
         self.tracker_type = tracker_type
         self.trackers = {} # id : tracker
         self.logger = logger
