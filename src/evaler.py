@@ -120,18 +120,20 @@ class Evaler:
             self.eval_segmentation(self.gt_masks_as_pred, pred_masks, object_gt_mapping)
 
     def load_gt_bb(self, class_info, gt):
-        self.gt_preds = get_gt_detections(class_info, gt)  # class : {object : info}
-        self.gt_as_pred = get_gt_detections_as_pred(class_info, gt)  # {object : info}
+        self.gt_preds, self.gt_as_pred = get_gt_detections(class_info, gt)
+        # self.gt_preds = get_gt_detections(class_info, gt) # class : {object : info}
+        # self.gt_as_pred = get_gt_detections_as_pred(class_info, gt)  # {object : info}
 
     def load_gt_sm(self, class_info, gt):
-        self.gt_preds = get_gt_masks(class_info, gt)  # class : {object : info}
-        self.gt_as_pred = get_gt_masks_as_pred(class_info, gt)  # {object : info}
+        self.gt_preds, self.gt_as_pred = get_gt_masks(class_info, gt)  # class : {object : info}
+        # self.gt_preds = get_gt_masks(class_info, gt)  # class : {object : info}
+        # self.gt_as_pred = get_gt_masks_as_pred(class_info, gt)  # {object : info}
 
     def load_gt_bbsm(self, class_info, gt):
-        self.gt_preds, self.gt_as_pred = get_gt_dets_from_mask_2(class_info, gt)
+        self.gt_preds, self.gt_as_pred, self.gt_masks_as_pred = get_gt_dets_from_mask(class_info, gt)
         # self.gt_preds = get_gt_dets_from_mask(class_info, gt)  # class : {object : info}
         # self.gt_as_pred = get_gt_dets_from_mask_as_pred(class_info, gt)  # {object : info}
-        self.gt_masks_as_pred = get_gt_masks_as_pred(class_info, gt)
+        # self.gt_masks_as_pred = get_gt_masks_as_pred(class_info, gt)
 
     def load_gt(self, class_info, gt):
         # get the gt detections in {object : info} for eval

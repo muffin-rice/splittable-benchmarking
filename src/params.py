@@ -49,7 +49,7 @@ PARAMS['BOX_LIMIT'] = 10 # max number of boxes to track
 PARAMS['TRACKING'] = True # execute + evaluate a tracking algorithm; if false, evaluates the detector
 PARAMS['TRACKER'] = 'MEDIANFLOW' # tracker algorithm
 PARAMS['BBOX_SEG'] = None
-PARAMS['CLIENT_DEVICE'] = 'cpu' # can be 'cuda'
+PARAMS['CLIENT_DEVICE'] = 'cpu' # can be 'cuda', for things like tracking + evaling
 # "policy" to use to add frames to tracker, 'None' is always add
 # choose between 'CONSTANT'
 PARAMS['WAITING_POLICY'] = None

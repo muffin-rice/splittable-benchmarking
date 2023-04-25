@@ -497,10 +497,11 @@ def lab2rgb(img):
     return cv2.cvtColor(img, cv2.COLOR_LAB2RGB)
 
 
-def separate_segmentation_mask(mask : np.array, OBJECT_LIMIT = 20) -> {int : np.array}:
+def separate_segmentation_mask(mask : np.array, object_ids = None, OBJECT_LIMIT = 20) -> {int : np.array}:
     '''given a segmentation of pixels where each pixel value corresponds to a specific object,
     return {object_id : binary_mask} '''
-    object_ids = np.unique(mask)
+    if object_ids is None:
+        object_ids = np.unique(mask)
     assert len(object_ids) < OBJECT_LIMIT, f'too many objects in segmentation scene: {len(object_ids)}'
 
     return {int(object_id) : mask == object_id for object_id in object_ids}
@@ -704,30 +705,25 @@ def get_gt_detections(class_info : ((int,), (int,)), boxes : [[int,],]) -> {int 
     returns as {class_ids : {object_ids : box}}'''
     assert len(class_info[0]) == len(boxes), f'class_info: {class_info} boxes: {boxes}'
     gt_boxes = {}
+    gt_boxes_pred = {}
     for i in range(len(class_info[0])):
         if class_info[0][i] not in DESIRED_CLASSES:
             continue
+
+        gt_boxes_pred[class_info[1][i]] = boxes[i]
 
         if class_info[0][i] in gt_boxes:
             gt_boxes[class_info[0][i]][class_info[1][i]] = boxes[i]
         else:
             gt_boxes[class_info[0][i]] = {class_info[1][i]: boxes[i]}
 
-    return gt_boxes
+    return gt_boxes, gt_boxes_pred
 
-def get_gt_detections_as_pred(class_info : ((int,), (int,)), boxes : [[int,],]) -> {int : (int,)}:
-    '''reformats the annotations into tracker-prediction format
-    class_info is (class_ids, object_ids)
-    returns as {object_id : box}'''
-    # TODO: move reformatting into dataset
-    assert len(class_info[0]) == len(boxes), f'class_info: {class_info} boxes: {boxes}'
-    return {object_id : bbox for class_id, object_id, bbox in zip(*class_info, boxes) if class_id in DESIRED_CLASSES}
-
-def get_gt_masks(class_info : ((int,), (int,)), gt_mask) -> {int : {int : np.array}}:
+def get_gt_masks(class_info : ((int,), (int,)), gt_mask) -> ({int : {int : np.array}}, {int : np.array}):
     '''reformats annotations into eval-friendly format
     class_info is (class_ids, object_ids)
     returns mask as {class : {object : map}}'''
-    mask_maps = separate_segmentation_mask(gt_mask)
+    mask_maps = separate_segmentation_mask(gt_mask, class_info[1])
 
     assert len(class_info[1]) == len(mask_maps.keys()), f'keys are {class_info[1]} vs. {mask_maps.keys()}'
 
@@ -742,58 +738,11 @@ def get_gt_masks(class_info : ((int,), (int,)), gt_mask) -> {int : {int : np.arr
         else:
             gt_masks[curr_class][curr_obj] = mask_maps[curr_obj]
 
-    return gt_masks
+    return gt_masks, mask_maps
 
-def get_gt_masks_as_pred(class_info : ((int,), (int,)), gt_mask : np.array) -> np.array:
-    '''returns the given gt_mask as a {obj_id : np.array (W x H)}'''
-    # x = np.zeros((1, 21, gt_mask.shape[0], gt_mask.shape[1]))
-    d = {}
-
-    for class_id, obj_id in zip(class_info[0], class_info[1]):
-        d[obj_id] = gt_mask == obj_id
-        # x[0, class_id, :, :][gt_mask == obj_id] = 1
-
-    return d
-
-def get_gt_dets_from_mask(class_info : ((int,), (int,)), gt_mask : np.array) -> {int : {int : np.array}}:
-    '''returns mask as {class : {object : bbox}}
-    used for BBSM run when annotations are in mask format'''
-    mask_maps = separate_segmentation_mask(gt_mask)
-
-    assert len(class_info[1]) == len(mask_maps.keys()), f'keys are {class_info[1]} vs. {mask_maps.keys()}'
-
-    gt_boxes = {}
-
-    for i in range(len(class_info[0])):
-        curr_class = class_info[0][i]
-        curr_obj = class_info[1][i]
-
-        if curr_class not in gt_boxes:
-            gt_boxes[curr_class] = {curr_obj : get_bbox_from_mask(mask_maps[curr_obj])}
-        else:
-            gt_boxes[curr_class][curr_obj] = get_bbox_from_mask(mask_maps[curr_obj])
-
-    return gt_boxes
-
-def get_gt_dets_from_mask_as_pred(class_info : ((int,), (int,)), gt_mask : np.array) -> {int : (int,)}:
-    '''reformats the annotations into tracker-prediction format
-    class_info is (class_ids, object_ids)
-    returns as {object_id : box}'''
-    mask_maps = separate_segmentation_mask(gt_mask)
-
-    assert len(class_info[1]) == len(mask_maps.keys()), f'keys are {class_info[1]} vs. {mask_maps.keys()}'
-    gt_boxes = {}
-    for i in range(len(class_info[0])):
-        if class_info[0][i] not in DESIRED_CLASSES:
-            continue
-
-        gt_boxes[class_info[1][i]] = get_bbox_from_mask(mask_maps[class_info[1][i]])
-
-    return gt_boxes
-
-def get_gt_dets_from_mask_2(class_info : ((int,), (int,)), gt_mask : np.array):
+def get_gt_dets_from_mask(class_info : ((int,), (int,)), gt_mask : np.array):
     '''does both functions but in 1 and returns both (more efficient)'''
-    mask_maps = separate_segmentation_mask(gt_mask)
+    mask_maps = separate_segmentation_mask(gt_mask, class_info[1])
 
     assert len(class_info[1]) == len(mask_maps.keys()), f'keys are {class_info[1]} vs. {mask_maps.keys()}'
     gt_boxes_pred = {}
@@ -810,7 +759,7 @@ def get_gt_dets_from_mask_2(class_info : ((int,), (int,)), gt_mask : np.array):
 
         gt_boxes_pred[curr_obj] = curr_mask
 
-    return gt_boxes, gt_boxes_pred
+    return gt_boxes, gt_boxes_pred, mask_maps
 
 def partition_objects_into_threads(detection_keys : [int], max_threads : int, min_objects : int) -> [[int]]:
     threads = []
