@@ -651,7 +651,7 @@ class Client:
                     self.evaler.evaluate_predictions(pred, self.object_gt_mapping, pred_masks)
 
                 now = time.time()
-                self.stats_logger.push_log({'iteration_time' : now - end_of_previous_iteration,
+                self.stats_logger.push_log({'iteration_time' : now - start_time-start_time_of_iteration,
                                             'time_to_eval' : now - time_to_eval_start})
                 # push log
                 self.stats_logger.push_log({}, append=True)
