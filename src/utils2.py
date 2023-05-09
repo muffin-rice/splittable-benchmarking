@@ -610,7 +610,7 @@ def get_midbox_references(bboxes : {int : (int,)}, full_img : np.array, box_radi
     img_lab = rgb2lab(full_img)
     for object_id, bbox in bboxes.items():
         if (bbox[2] - bbox[0] < box_radius*2) or (bbox[3] - bbox[1] < box_radius*2):
-            print(f'bbox too small: {full_img}')
+            print(f'bbox too small: {full_img}, {bbox}')
             continue
 
         # midbox as reference

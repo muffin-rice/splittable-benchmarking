@@ -630,6 +630,7 @@ class Client:
 
                 fake_pred = False
                 if pred is None:
+                    self.logger.log_info('Fake prediction used')
                     fake_pred = True
                     pred = self.evaler.gt_as_pred
 

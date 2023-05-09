@@ -8,6 +8,7 @@ import cv2
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import math
+from collections import defaultdict
 
 VIRAT_COLS = ['object_id', 'duration', 'frame_num', 'x', 'y', 'w', 'h', 'class_name']
 
@@ -249,3 +250,158 @@ def get_group(grouped, group_name):
 
 def get_time_columns(df):
     return [x for x in df if 'time' in x]
+
+# 1. get the decay of accuracy as it goes
+# split when the tracker is reset, ie. when 'reset_tracker' is True
+def get_accuracies_of_objects(df, objs, prefix = 'p_d_'):
+    '''get acc decay of each object, split by each reset_tracker'''
+    acc_lists = {}
+    for obj in objs:
+        obj_name = f'{prefix}{obj}'
+        acc_lists[obj] = [[]]
+        for i, row in df.iterrows():
+            # if nan, make new row if there was stuff before
+            if np.isnan(row[obj_name]):
+                if acc_lists[obj][-1]: # new row if there has been existing things
+                    acc_lists[obj].append([])
+
+            # if not nan either append or start new row based on bool value
+            else:
+                if not np.isnan(row['reset_tracker']) and row['reset_tracker']:
+                    if acc_lists[obj][-1]: # new row if existing thing
+                        acc_lists[obj].append([])
+                else:
+                    acc_lists[obj][-1].append(row[obj_name])
+
+        # check the last acc_list if it's empty
+        # if it is empty, remove it
+        if not acc_lists[obj][-1]:
+            acc_lists[obj] = acc_lists[obj][:-1]
+
+        acc_lists[obj] = [np.array(x) for x in acc_lists[obj]]
+
+    return acc_lists
+
+def get_average_decay(acc_list : np.array) -> float:
+    '''helper function for get_acc_decay'''
+    if acc_list[0] in (0, -1):
+        return -1
+
+    if (acc_list <= 0).any():
+        filtered_acc = acc_list[acc_list > 0]
+        return acc_list[0] / (filtered_acc.shape[0] + 1)
+    
+    return (acc_list[0] - acc_list[-1])/acc_list.shape[0]
+
+# postprocess former function
+def get_acc_decay(acc_lists : {int : [np.array]}) -> {int : [[float]]}:
+    '''get average decay in acc by object per reset_tracker'''
+    return {obj_id : [get_average_decay(acc_list) for acc_list in v] for obj_id, v in acc_lists.items()}
+
+def get_improvement(acc_lists : [np.array]) -> []:
+    '''helper function for get_improvement_from_reset'''
+    l = []
+    old_low = 0
+    for acc_list in acc_lists:
+        l.append(acc_list[0] - old_low)
+        old_low = acc_list[-1]
+
+    return l
+
+def get_improvement_from_reset(acc_lists : {int : [np.array]}) -> {int : [float]}:
+    '''get accuracy improvement by object per reset_tracker'''
+    return {obj_id : get_improvement(v) for obj_id, v in acc_lists.items()}
+
+def get_objs_in_row(df, i, all_objs, format_obj) -> {int}:
+    gen_objs = set()
+    high_objs = set()
+    for obj_id in all_objs:
+        curr_acc = df[format_obj(obj_id)].iloc[i]
+        if not np.isnan(curr_acc):
+            gen_objs.add(obj_id)
+            if curr_acc > 0.5:
+                high_objs.add(obj_id)
+
+    return gen_objs, high_objs
+
+def get_tracked_diff_from_reset(df : pd.DataFrame, all_objs, format_objs) -> [int]:
+    '''get uptick in every num_high_objects during a reset_tracker
+    also get decay in num_high_objects between reset_trackers
+    2 things for decay in num_high_objects'''
+    decay_missed_arr = []
+    decay_lost_arr = []
+    improvement_arr = []
+    old_high = df['num_high_objects'].iloc[0]
+    old_reset_index = 0
+    for reset_index in get_nonnan_rows(df, 'reset_tracker').index:
+        old_gen_objs, old_high_objs = get_objs_in_row(df, old_reset_index, all_objs, format_objs)
+        gen_objs, high_objs = get_objs_in_row(df, reset_index-1, all_objs, format_objs)
+
+        # objects that are in old_high but not in high_objs are "lost"
+        if not high_objs.issubset(old_gen_objs):
+            print(f'some error that the new high_objs is not in the object subset: {old_reset_index}, {reset_index}, {high_objs}, {old_gen_objs}')
+
+        decay_lost_arr.append(len(old_high_objs) - len(high_objs))
+
+        # objects that are in gen_objs but not in old_gen_objs are "missing"
+        x=0
+        for obj in gen_objs:
+            if obj not in old_gen_objs:
+                x += 1
+
+        decay_missed_arr.append(x)
+
+        old_reset_index = reset_index
+
+        improvement_arr.append(df['num_high_objects'].iloc[reset_index] - df['num_high_objects'].iloc[reset_index-1])
+        old_high = df['num_high_objects'].iloc[reset_index]
+
+    return np.array(decay_missed_arr), np.array(decay_lost_arr), np.array(improvement_arr)
+
+def get_first_instance_unhigh(df, col_to_check):
+    df = df.fillna(0)
+    try:
+        x = df[df[col_to_check] < 0.5].index[0] - df.index[0]
+    except:
+        print(df)
+        raise AssertionError
+
+    return x
+
+def iters_until_lost(df, all_objs, format_objs) -> {int : [int]}:
+    # for every object that gets "lost", count the number of iters until it does so
+    old_reset_index = 0
+    lost_dict = defaultdict(list)
+
+    for reset_index in get_nonnan_rows(df, 'reset_tracker').index:
+        old_gen_objs, old_high_objs = get_objs_in_row(df, old_reset_index, all_objs, format_objs)
+        gen_objs, high_objs = get_objs_in_row(df, reset_index - 1, all_objs, format_objs)
+
+        # lost are the ones in old high but not in high
+        for old_obj in old_high_objs:
+            if old_obj not in high_objs:
+                # get the iter at which it peers below 0.5
+                lost_dict[old_obj].append(get_first_instance_unhigh(df[old_reset_index : reset_index], format_objs(old_obj)))
+
+        old_reset_index = reset_index
+
+    return lost_dict
+
+def process_dataframe(df, missing_preds = True):
+    # first get the acc deltas
+    get_num_tracked(df)
+    objs = get_all_tracked_objects(df)
+    if missing_preds:
+        df = count_missing_preds(df)
+
+    acc_lists = get_accuracies_of_objects(df, objs, prefix='p_s_')
+
+    acc_decay = get_acc_decay(acc_lists)
+    acc_improvement = get_improvement_from_reset(acc_lists)
+    tracked_missed, tracked_lost, tracked_improvement = get_tracked_diff_from_reset(df, objs, lambda x : f'p_s_{x}')
+    lost_iters = iters_until_lost(df, objs, lambda x : f'p_s_{x}')
+
+    for time_col in get_time_columns(df):
+        print(f'{time_col}\t : {df[time_col].mean()}')
+
+    return df, objs, acc_decay, acc_improvement, tracked_missed, tracked_lost, tracked_improvement, lost_iters
